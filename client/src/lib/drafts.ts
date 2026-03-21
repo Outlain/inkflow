@@ -10,9 +10,14 @@ export interface PageDraftRecord {
   dirty: boolean;
 }
 
+interface StoredPageDraftRecord extends Omit<PageDraftRecord, 'pageId'> {
+  pageId?: string;
+  id?: string;
+}
+
 const DB_NAME = 'inkflow-drafts';
 const STORE_NAME = 'pageDrafts';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -26,8 +31,27 @@ function openDatabase(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = () => {
       const database = request.result;
+      const transaction = request.transaction;
+
       if (!database.objectStoreNames.contains(STORE_NAME)) {
-        const store = database.createObjectStore(STORE_NAME, { keyPath: 'pageId' });
+        createDraftStore(database);
+        return;
+      }
+
+      if (!transaction) {
+        return;
+      }
+
+      const store = transaction.objectStore(STORE_NAME);
+      const hasPageIdKeyPath = store.keyPath === 'pageId';
+      if (!hasPageIdKeyPath) {
+        // Older browsers may still have a legacy store schema; recreate it so writes are keyed by pageId.
+        database.deleteObjectStore(STORE_NAME);
+        createDraftStore(database);
+        return;
+      }
+
+      if (!store.indexNames.contains('documentId')) {
         store.createIndex('documentId', 'documentId', { unique: false });
       }
     };
@@ -46,20 +70,58 @@ async function transact<T>(mode: IDBTransactionMode, execute: (store: IDBObjectS
     const transaction = database.transaction(STORE_NAME, mode);
     const store = transaction.objectStore(STORE_NAME);
     const request = execute(store);
+    transaction.onabort = () => reject(transaction.error ?? new Error('Draft transaction aborted.'));
+    transaction.onerror = () => reject(transaction.error ?? new Error('Draft transaction failed.'));
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Draft transaction failed.'));
   });
 }
 
 export async function readDraft(pageId: string): Promise<PageDraftRecord | null> {
-  const record = await transact<PageDraftRecord | undefined>('readonly', (store) => store.get(pageId));
-  return record ?? null;
+  const record = await transact<StoredPageDraftRecord | undefined>('readonly', (store) => store.get(pageId));
+  return normalizeDraftRecord(record);
 }
 
 export async function writeDraft(record: PageDraftRecord): Promise<void> {
-  await transact('readwrite', (store) => store.put(record));
+  if (!record.pageId) {
+    throw new Error('Cannot write draft without a page id.');
+  }
+
+  const storedRecord: StoredPageDraftRecord = {
+    ...record,
+    id: record.pageId
+  };
+
+  await transact('readwrite', (store) => store.put(storedRecord));
 }
 
 export async function deleteDraft(pageId: string): Promise<void> {
   await transact('readwrite', (store) => store.delete(pageId));
+}
+
+function createDraftStore(database: IDBDatabase): IDBObjectStore {
+  const store = database.createObjectStore(STORE_NAME, { keyPath: 'pageId' });
+  store.createIndex('documentId', 'documentId', { unique: false });
+  return store;
+}
+
+function normalizeDraftRecord(record?: StoredPageDraftRecord): PageDraftRecord | null {
+  if (!record) {
+    return null;
+  }
+
+  const pageId = record.pageId ?? record.id;
+  if (!pageId) {
+    return null;
+  }
+
+  return {
+    pageId,
+    documentId: record.documentId,
+    annotations: record.annotations,
+    annotationText: record.annotationText,
+    annotationRevision: record.annotationRevision,
+    updatedAt: record.updatedAt,
+    dirty: record.dirty
+  };
 }
