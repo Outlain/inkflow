@@ -34,11 +34,14 @@
     DEFAULT_STROKE_PRESET_SETTINGS,
     STROKE_BOUNDS,
     cloneStrokePresetSettings,
+    defaultStrokeStabilization,
     formatStrokeWidth,
     loadEraserStrokeMode,
+    loadStrokeStabilization,
     loadStrokePresetSettings,
     resetStrokePresetWidth,
     saveEraserStrokeMode,
+    saveStrokeStabilization,
     saveStrokePresetSettings,
     strokePresetIndicatorSize,
     toolStrokeWidthFromSettings,
@@ -132,6 +135,8 @@
   let strokePresetSettingsLoaded = false;
   let eraserStrokeMode: EraserStrokeMode = 'whole';
   let eraserStrokeModeLoaded = false;
+  let strokeStabilization = defaultStrokeStabilization();
+  let strokeStabilizationLoaded = false;
   let selectedShapeKind: ShapeKind = 'rectangle';
   let selectedShapeFill = false;
   let selectedShapeLineStyle: LineStyle = 'solid';
@@ -178,6 +183,7 @@
   let strokePopoverWidth = 0;
   let strokePopoverWidthLabel = '';
   let strokePopoverSampleStyle = '';
+  let strokeStabilizationLabel = `${defaultStrokeStabilization()}%`;
   let longPressTimer = 0;
   let suppressedClickKey = '';
   let compactHeaderShown = false;
@@ -193,10 +199,12 @@
   let historyRedoCount = 0;
   let canUndoAvailable = false;
   let canRedoAvailable = false;
+  let currentPageAnnotationCount = 0;
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
   $: strokePopoverWidth = strokePopover ? currentStrokePresetValue(strokePopover.tool, strokePopover.preset) : 0;
   $: strokePopoverWidthLabel = formatStrokeWidth(strokePopoverWidth);
+  $: strokeStabilizationLabel = `${strokeStabilization}%`;
   $: strokePopoverSampleStyle = strokePopover
     ? `height:${Math.min(18, Math.max(3, strokePopoverWidth))}px; background:${strokePopover.tool === 'eraser' ? 'rgba(255,255,255,0.94)' : selectedColor}; opacity:${strokePopover.tool === 'highlighter' ? 0.34 : 1}; box-shadow:${strokePopover.tool === 'eraser' ? '0 0 0 1px rgba(42,34,29,0.12) inset' : 'none'};`
     : '';
@@ -211,6 +219,7 @@
   $: historyRedoCount = historyTargetPageRecord ? pageStates[historyTargetPageRecord.id]?.redoStack?.length ?? 0 : 0;
   $: canUndoAvailable = historyUndoCount > 0;
   $: canRedoAvailable = historyRedoCount > 0;
+  $: currentPageAnnotationCount = currentPageRecord ? pageStates[currentPageRecord.id]?.annotations?.length ?? 0 : 0;
 
   function defaultPageState(): PageRuntimeState {
     return {
@@ -546,6 +555,19 @@
     eraserStrokeMode = mode;
   }
 
+  function setStrokeStabilization(rawValue: string): void {
+    const nextValue = Number.parseFloat(rawValue);
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    strokeStabilization = Math.max(0, Math.min(100, Math.round(nextValue)));
+  }
+
+  function restoreStrokeStabilization(): void {
+    strokeStabilization = defaultStrokeStabilization();
+  }
+
   function updateStrokePopoverWidth(rawValue: string): void {
     if (!strokePopover) {
       return;
@@ -646,6 +668,20 @@
       annotations: nextAnnotations,
       annotationText: nextState.annotationText
     });
+  }
+
+  async function clearCurrentPageAnnotations(): Promise<void> {
+    const page = currentPage();
+    if (!page) {
+      return;
+    }
+
+    const state = ensurePageState(page.id);
+    if (state.annotations.length === 0) {
+      return;
+    }
+
+    await replaceAnnotations(page.id, []);
   }
 
   function syncViewportMode(): void {
@@ -1545,6 +1581,8 @@
     strokePresetSettingsLoaded = true;
     eraserStrokeMode = loadEraserStrokeMode();
     eraserStrokeModeLoaded = true;
+    strokeStabilization = loadStrokeStabilization();
+    strokeStabilizationLoaded = true;
     void loadDocument();
 
     resizeObserver = new ResizeObserver(() => {
@@ -1591,6 +1629,10 @@
 
   $: if (eraserStrokeModeLoaded) {
     saveEraserStrokeMode(eraserStrokeMode);
+  }
+
+  $: if (strokeStabilizationLoaded) {
+    saveStrokeStabilization(strokeStabilization);
   }
 
   $: if (strokePopover && selectedTool !== strokePopover.tool) {
@@ -1821,6 +1863,22 @@
             Partial
           </button>
         </div>
+      {:else}
+        <div class="stroke-popover-secondary-group">
+          <div class="stroke-popover-secondary-header">
+            <strong>Stabilization</strong>
+            <span>{strokeStabilizationLabel}</span>
+          </div>
+          <input
+            class="stroke-popover-slider secondary"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={strokeStabilization}
+            on:input={(event) => setStrokeStabilization((event.currentTarget as HTMLInputElement).value)}
+          />
+        </div>
       {/if}
 
       <div class="stroke-popover-preview">
@@ -1842,6 +1900,18 @@
 
       <div class="stroke-popover-actions">
         <button class="button subtle full stroke-popover-reset" type="button" on:click={restoreStrokePopoverPreset}>Reset preset</button>
+        {#if strokePopover.tool === 'eraser'}
+          <button
+            class="button subtle full stroke-popover-danger"
+            type="button"
+            disabled={currentPageAnnotationCount === 0}
+            on:click={clearCurrentPageAnnotations}
+          >
+            Clear page annotations
+          </button>
+        {:else}
+          <button class="button subtle full stroke-popover-reset" type="button" on:click={restoreStrokeStabilization}>Reset stabilization</button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -2089,6 +2159,7 @@
                 highlighterStrokeWidths={strokePresetSettings.highlighter}
                 eraserStrokeWidths={strokePresetSettings.eraser}
                 eraserStrokeMode={eraserStrokeMode}
+                strokeStabilization={strokeStabilization}
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
                 shapeLineStyle={selectedShapeLineStyle}

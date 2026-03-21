@@ -218,6 +218,24 @@ export function toolStrokeWidth(sizePreset: number, highlighter = false): number
   return resolvePresetValue(highlighter ? DEFAULT_STROKE_PRESET_SETTINGS.highlighter : DEFAULT_STROKE_PRESET_SETTINGS.pen, sizePreset);
 }
 
+export function stabilizeStrokePoints(points: PagePoint[], stabilization: number): PagePoint[] {
+  const amount = Math.max(0, Math.min(100, stabilization));
+  if (amount <= 0 || points.length < 3) {
+    return points.map((point) => ({ ...point }));
+  }
+
+  const radius = amount < 20 ? 1 : amount < 45 ? 2 : amount < 70 ? 3 : 4;
+  const blend = Math.min(0.92, amount / 100);
+  let smoothed = points.map((point) => ({ ...point }));
+
+  const passes = amount < 35 ? 1 : amount < 70 ? 2 : 3;
+  for (let pass = 0; pass < passes; pass += 1) {
+    smoothed = smoothStrokePass(smoothed, radius, blend);
+  }
+
+  return trimStrokeTails(smoothed, amount);
+}
+
 export function createStroke(params: {
   id: string;
   tool: 'pen' | 'highlighter';
@@ -233,4 +251,83 @@ export function createStroke(params: {
     width: params.width,
     points: params.points
   };
+}
+
+function smoothStrokePass(points: PagePoint[], radius: number, blend: number): PagePoint[] {
+  const lastIndex = points.length - 1;
+  const next = points.map((point) => ({ ...point }));
+
+  for (let index = 1; index < lastIndex; index += 1) {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(lastIndex, index + radius);
+    let totalWeight = 0;
+    let weightedX = 0;
+    let weightedY = 0;
+    let weightedPressure = 0;
+
+    for (let neighbor = start; neighbor <= end; neighbor += 1) {
+      const distance = Math.abs(neighbor - index);
+      const weight = radius - distance + 1;
+      totalWeight += weight;
+      weightedX += points[neighbor].x * weight;
+      weightedY += points[neighbor].y * weight;
+      weightedPressure += points[neighbor].pressure * weight;
+    }
+
+    const averageX = weightedX / totalWeight;
+    const averageY = weightedY / totalWeight;
+    const averagePressure = weightedPressure / totalWeight;
+    const edgeBlend = index === 1 || index === lastIndex - 1 ? blend * 0.55 : blend;
+    next[index] = {
+      ...points[index],
+      x: points[index].x + (averageX - points[index].x) * edgeBlend,
+      y: points[index].y + (averageY - points[index].y) * edgeBlend,
+      pressure: points[index].pressure + (averagePressure - points[index].pressure) * edgeBlend
+    };
+  }
+
+  return next;
+}
+
+function trimStrokeTails(points: PagePoint[], stabilization: number): PagePoint[] {
+  if (points.length < 4 || stabilization < 25) {
+    return points;
+  }
+
+  let next = points.map((point) => ({ ...point }));
+  next = trimSingleTail(next, 'end', stabilization);
+  next = trimSingleTail(next, 'start', stabilization);
+  return next;
+}
+
+function trimSingleTail(points: PagePoint[], edge: 'start' | 'end', stabilization: number): PagePoint[] {
+  if (points.length < 4) {
+    return points;
+  }
+
+  const ordered = edge === 'end' ? points : [...points].reverse();
+  const first = ordered[0];
+  const second = ordered[1];
+  const third = ordered[2];
+
+  const firstLength = Math.hypot(first.x - second.x, first.y - second.y);
+  const secondLength = Math.hypot(second.x - third.x, second.y - third.y);
+  if (firstLength === 0 || secondLength === 0) {
+    return points;
+  }
+
+  const dot = (second.x - third.x) * (first.x - second.x) + (second.y - third.y) * (first.y - second.y);
+  const cosine = dot / (firstLength * secondLength);
+  const sharpReverse = cosine < -0.2;
+  const smallTail = firstLength <= Math.max(1.2, secondLength * (0.55 - Math.min(0.2, stabilization / 500)));
+
+  if (!sharpReverse || !smallTail) {
+    return points;
+  }
+
+  if (edge === 'end') {
+    return points.slice(0, -1);
+  }
+
+  return points.slice(1);
 }

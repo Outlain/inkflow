@@ -15,7 +15,7 @@
   import { createClientId } from '../id';
   import { cancelCanvasRender, renderPdfPage, type PdfRenderSegment } from '../pdf';
   import type { PageShellLayout } from '../reader/layout';
-  import { createStroke, eraseAnnotations, shapePath, strokePath } from '../annotations';
+  import { createStroke, eraseAnnotations, shapePath, stabilizeStrokePoints, strokePath } from '../annotations';
   import {
     DEFAULT_STROKE_PRESET_SETTINGS,
     resolvePresetValue,
@@ -41,6 +41,7 @@
   export let highlighterStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.highlighter] as StrokePresetValues;
   export let eraserStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.eraser] as StrokePresetValues;
   export let eraserStrokeMode: EraserStrokeMode = 'whole';
+  export let strokeStabilization = 30;
   export let onPenSessionChange: (active: boolean) => void = () => undefined;
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
@@ -91,6 +92,14 @@
 
   function currentEraserRadius(): number {
     return resolvePresetValue(eraserStrokeWidths, sizePreset);
+  }
+
+  function currentStrokePoints(): PagePoint[] {
+    if (tool !== 'pen' && tool !== 'highlighter') {
+      return activePoints;
+    }
+
+    return stabilizeStrokePoints(activePoints, strokeStabilization);
   }
 
   function lineStyle(annotation: ShapeAnnotation): string {
@@ -168,12 +177,13 @@
     }
 
     if (tool === 'pen' || tool === 'highlighter') {
+      const strokePoints = currentStrokePoints();
       const stroke = createStroke({
         id: createClientId(),
         tool,
         color,
         width: currentStrokeWidth(),
-        points: activePoints
+        points: strokePoints
       });
       onAppend(layout.page.id, [stroke]);
     }
@@ -464,6 +474,7 @@
     }
 
     if (tool === 'pen' || tool === 'highlighter') {
+      const strokePoints = currentStrokePoints();
       previewAnnotations = [
         ...annotations,
         createStroke({
@@ -471,7 +482,7 @@
           tool,
           color,
           width: currentStrokeWidth(),
-          points: activePoints
+          points: strokePoints
         })
       ];
     }
@@ -486,6 +497,7 @@
     continueStroke(event);
 
     if (tool === 'pen' || tool === 'highlighter') {
+      const strokePoints = currentStrokePoints();
       previewAnnotations = [
         ...annotations,
         createStroke({
@@ -493,7 +505,7 @@
           tool,
           color,
           width: currentStrokeWidth(),
-          points: activePoints
+          points: strokePoints
         })
       ];
     }

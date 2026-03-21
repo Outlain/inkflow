@@ -657,6 +657,30 @@ img {
   font-size: 0.96rem;
 }
 
+.stroke-popover-secondary-group {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.stroke-popover-secondary-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stroke-popover-secondary-header strong {
+  font-size: 0.95rem;
+  color: #fffdfa;
+}
+
+.stroke-popover-secondary-header span {
+  font-size: 0.9rem;
+  color: rgba(244, 238, 230, 0.78);
+  font-weight: 600;
+}
+
 .stroke-popover-preview-rail {
   min-height: 46px;
   display: flex;
@@ -678,6 +702,10 @@ img {
   margin-top: 16px;
   appearance: none;
   background: transparent;
+}
+
+.stroke-popover-slider.secondary {
+  margin-top: 0;
 }
 
 .stroke-popover-slider::-webkit-slider-runnable-track {
@@ -713,6 +741,8 @@ img {
 }
 
 .stroke-popover-actions {
+  display: grid;
+  gap: 10px;
   margin-top: 16px;
 }
 
@@ -720,6 +750,12 @@ img {
   background: rgba(255, 255, 255, 0.1);
   color: #f7f4ee;
   border-color: rgba(255, 255, 255, 0.16);
+}
+
+.stroke-popover-danger.button.subtle {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7f4ee;
+  border-color: rgba(214, 110, 84, 0.26);
 }
 
 .reader-toolbar-row {

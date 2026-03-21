@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eraseAnnotations } from './annotations';
+import { eraseAnnotations, stabilizeStrokePoints } from './annotations';
 import type { Annotation, PagePoint } from '@shared/contracts';
 
 function point(x: number, y: number): PagePoint {
@@ -76,5 +76,24 @@ describe('eraseAnnotations', () => {
     const result = eraseAnnotations(annotations, [point(20, 20), point(65, 15)], 1, { strokeMode: 'partial' });
 
     expect(result).toEqual([]);
+  });
+});
+
+describe('stabilizeStrokePoints', () => {
+  it('returns original points when stabilization is zero', () => {
+    const points = [point(0, 0), point(5, 5), point(10, 0)];
+
+    expect(stabilizeStrokePoints(points, 0)).toEqual(points);
+  });
+
+  it('smooths interior points without dropping endpoints', () => {
+    const points = [point(0, 0), point(5, 8), point(10, -6), point(15, 0)];
+
+    const result = stabilizeStrokePoints(points, 80);
+
+    expect(result[0]).toEqual(points[0]);
+    expect(result[result.length - 1]).toEqual(points[points.length - 1]);
+    expect(result[1].y).not.toEqual(points[1].y);
+    expect(result[2].y).not.toEqual(points[2].y);
   });
 });

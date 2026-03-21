@@ -17,6 +17,8 @@ export interface StrokeBounds {
 
 const STORAGE_KEY = 'inkflowStrokePresetSettings.v1';
 const ERASER_MODE_STORAGE_KEY = 'inkflowEraserStrokeMode.v1';
+const STROKE_STABILIZATION_STORAGE_KEY = 'inkflowStrokeStabilization.v1';
+const DEFAULT_STROKE_STABILIZATION = 30;
 
 export const DEFAULT_STROKE_PRESET_SETTINGS: StrokePresetSettings = {
   pen: [2, 4, 7],
@@ -105,6 +107,44 @@ export function saveEraserStrokeMode(mode: EraserStrokeMode): void {
 
   try {
     window.localStorage.setItem(ERASER_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage failures so interaction never depends on persistence.
+  }
+}
+
+export function defaultStrokeStabilization(): number {
+  return DEFAULT_STROKE_STABILIZATION;
+}
+
+export function clampStrokeStabilization(value: number): number {
+  const next = Number.isFinite(value) ? value : DEFAULT_STROKE_STABILIZATION;
+  return Math.max(0, Math.min(100, Math.round(next)));
+}
+
+export function loadStrokeStabilization(): number {
+  if (typeof window === 'undefined') {
+    return DEFAULT_STROKE_STABILIZATION;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STROKE_STABILIZATION_STORAGE_KEY);
+    if (raw === null) {
+      return DEFAULT_STROKE_STABILIZATION;
+    }
+
+    return clampStrokeStabilization(Number.parseFloat(raw));
+  } catch {
+    return DEFAULT_STROKE_STABILIZATION;
+  }
+}
+
+export function saveStrokeStabilization(value: number): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(STROKE_STABILIZATION_STORAGE_KEY, String(clampStrokeStabilization(value)));
   } catch {
     // Ignore storage failures so interaction never depends on persistence.
   }
