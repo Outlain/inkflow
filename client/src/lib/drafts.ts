@@ -27,6 +27,11 @@ function openDatabase(): Promise<IDBDatabase> {
   }
 
   databasePromise = new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB is not available.'));
+      return;
+    }
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = () => {
@@ -57,6 +62,7 @@ function openDatabase(): Promise<IDBDatabase> {
     };
 
     request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => reject(new Error('Draft database upgrade is blocked.'));
     request.onerror = () => reject(request.error ?? new Error('Could not open drafts database.'));
   });
 

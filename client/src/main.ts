@@ -2,6 +2,11 @@ import './styles.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 
+const BENIGN_RUNTIME_ERRORS = [
+  'ResizeObserver loop completed with undelivered notifications.',
+  'ResizeObserver loop limit exceeded'
+];
+
 function renderStartupError(error: unknown): void {
   const target = document.getElementById('app');
   if (!target) {
@@ -20,11 +25,47 @@ function renderStartupError(error: unknown): void {
   `;
 }
 
+function normalizeWindowError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error ?? '');
+}
+
+function isBenignRuntimeError(error: unknown): boolean {
+  const message = normalizeWindowError(error);
+  return BENIGN_RUNTIME_ERRORS.some((knownMessage) => message.includes(knownMessage));
+}
+
+let startupPhase = true;
+
 window.addEventListener('error', (event) => {
-  renderStartupError(event.error ?? event.message);
+  const error = event.error ?? event.message;
+  if (isBenignRuntimeError(error)) {
+    console.warn('[Inkflow] Ignored benign runtime error:', normalizeWindowError(error));
+    return;
+  }
+
+  if (!startupPhase) {
+    console.error('[Inkflow] Runtime error:', error);
+    return;
+  }
+
+  renderStartupError(error);
 });
 
 window.addEventListener('unhandledrejection', (event) => {
+  if (isBenignRuntimeError(event.reason)) {
+    console.warn('[Inkflow] Ignored benign runtime rejection:', normalizeWindowError(event.reason));
+    return;
+  }
+
+  if (!startupPhase) {
+    console.error('[Inkflow] Runtime rejection:', event.reason);
+    return;
+  }
+
   renderStartupError(event.reason);
 });
 
@@ -35,6 +76,9 @@ let app: ReturnType<typeof mount> | null = null;
 if (target) {
   try {
     app = mount(App, { target });
+    queueMicrotask(() => {
+      startupPhase = false;
+    });
   } catch (error) {
     renderStartupError(error);
   }

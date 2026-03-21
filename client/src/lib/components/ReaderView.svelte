@@ -190,6 +190,7 @@
   let compactHeaderVisibleState = false;
   let readerScreen: HTMLDivElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let resizeFrame = 0;
   let syncSocket: WebSocket | null = null;
   let currentPageRecord: DocumentBundle['pages'][number] | null = null;
   let historyTargetPageRecord: DocumentBundle['pages'][number] | null = null;
@@ -200,6 +201,7 @@
   let canUndoAvailable = false;
   let canRedoAvailable = false;
   let currentPageAnnotationCount = 0;
+  let draftsAvailable = true;
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
   $: strokePopoverWidth = strokePopover ? currentStrokePresetValue(strokePopover.tool, strokePopover.preset) : 0;
@@ -894,15 +896,16 @@
 
   async function persistDraft(pageId: string): Promise<void> {
     const state = ensurePageState(pageId);
-    debugTimeline.log('draft-start', `Draft write started for ${pageId}`);
 
-    if (!bundle) {
+    if (!bundle || !draftsAvailable) {
       return;
     }
 
+    debugTimeline.log('draft-start', `Draft write started for ${pageId}`);
+
     try {
       if (state.dirty || state.annotations.length > 0) {
-        await writeDraft({
+        await safeWriteDraft({
           pageId,
           documentId: bundle.document.id,
           annotations: state.annotations,
@@ -912,7 +915,7 @@
           dirty: state.dirty
         });
       } else {
-        await deleteDraft(pageId);
+        await safeDeleteDraft(pageId);
       }
     } finally {
       debugTimeline.log('draft-end', `Draft write finished for ${pageId}`);
@@ -933,7 +936,8 @@
     });
 
     try {
-      const [remote, draft] = await Promise.all([fetchPageAnnotations(pageId), readDraft(pageId)]);
+      const remote = await fetchPageAnnotations(pageId);
+      const draft = await safeReadDraft(pageId);
       let nextState: PageRuntimeState = {
         annotations: remote.annotations,
         annotationText: remote.annotationText,
@@ -969,7 +973,7 @@
           dirty: true
         };
       } else if (draft && !draft.dirty) {
-        await deleteDraft(pageId);
+        await safeDeleteDraft(pageId);
       }
 
       const latestState = ensurePageState(pageId);
@@ -985,6 +989,55 @@
         loading: false,
         saveError: error instanceof Error ? error.message : 'Could not load page annotations.'
       });
+    }
+  }
+
+  async function safeReadDraft(pageId: string): Promise<PageDraftRecord | null> {
+    if (!draftsAvailable) {
+      return null;
+    }
+
+    try {
+      return await readDraft(pageId);
+    } catch (error) {
+      draftsAvailable = false;
+      debugTimeline.log(
+        'draft-end',
+        `Draft reads disabled for this session: ${error instanceof Error ? error.message : 'Draft read failed.'}`
+      );
+      return null;
+    }
+  }
+
+  async function safeWriteDraft(record: PageDraftRecord): Promise<void> {
+    if (!draftsAvailable) {
+      return;
+    }
+
+    try {
+      await writeDraft(record);
+    } catch (error) {
+      draftsAvailable = false;
+      debugTimeline.log(
+        'draft-end',
+        `Draft writes disabled for this session: ${error instanceof Error ? error.message : 'Draft write failed.'}`
+      );
+    }
+  }
+
+  async function safeDeleteDraft(pageId: string): Promise<void> {
+    if (!draftsAvailable) {
+      return;
+    }
+
+    try {
+      await deleteDraft(pageId);
+    } catch (error) {
+      draftsAvailable = false;
+      debugTimeline.log(
+        'draft-end',
+        `Draft deletes disabled for this session: ${error instanceof Error ? error.message : 'Draft delete failed.'}`
+      );
     }
   }
 
@@ -1035,7 +1088,7 @@
             dirty: (pendingSaves.get(pageId)?.length ?? 0) > 0
           };
           setPageState(pageId, nextState);
-          await persistDraft(pageId);
+          void persistDraft(pageId);
           debugTimeline.log('save-end', `${item.mode} save finished for ${pageId}`);
         } catch (error) {
           const latest = ensurePageState(pageId);
@@ -1047,7 +1100,7 @@
             dirty: true
           });
           pendingSaves.set(pageId, []);
-          await persistDraft(pageId);
+          void persistDraft(pageId);
           debugTimeline.log('save-end', `${item.mode} save failed for ${pageId}: ${message}`);
           break;
         }
@@ -1066,7 +1119,7 @@
       pendingSaves.set(pageId, queue);
     }
 
-    await persistDraft(pageId);
+    void persistDraft(pageId);
     void drainSaves(pageId);
   }
 
@@ -1586,7 +1639,10 @@
     void loadDocument();
 
     resizeObserver = new ResizeObserver(() => {
-      recalcLayout('resize');
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        recalcLayout('resize');
+      });
     });
 
     if (centerPane) {
@@ -1596,6 +1652,7 @@
 
   onDestroy(() => {
     resizeObserver?.disconnect();
+    cancelAnimationFrame(resizeFrame);
     cancelAnimationFrame(scrollFrame);
     cancelAnimationFrame(pinchFrame);
     window.clearTimeout(scrollEndTimer);
