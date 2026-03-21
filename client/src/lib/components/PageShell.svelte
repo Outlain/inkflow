@@ -15,8 +15,13 @@
   import { createClientId } from '../id';
   import { cancelCanvasRender, renderPdfPage, type PdfRenderSegment } from '../pdf';
   import type { PageShellLayout } from '../reader/layout';
-  import { createStroke, eraseAnnotations, eraserWidth, shapePath, strokePath } from '../annotations';
-  import { DEFAULT_STROKE_PRESET_SETTINGS, resolvePresetValue, type StrokePresetValues } from '../strokeSettings';
+  import { createStroke, eraseAnnotations, shapePath, strokePath } from '../annotations';
+  import {
+    DEFAULT_STROKE_PRESET_SETTINGS,
+    resolvePresetValue,
+    type EraserStrokeMode,
+    type StrokePresetValues
+  } from '../strokeSettings';
 
   export let layout: PageShellLayout;
   export let file: FileRecord | null = null;
@@ -34,6 +39,8 @@
   export let viewportHeight = 0;
   export let penStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pen] as StrokePresetValues;
   export let highlighterStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.highlighter] as StrokePresetValues;
+  export let eraserStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.eraser] as StrokePresetValues;
+  export let eraserStrokeMode: EraserStrokeMode = 'whole';
   export let onPenSessionChange: (active: boolean) => void = () => undefined;
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
@@ -56,6 +63,9 @@
   let inkSessionActive = false;
   let previewWidth = 0;
   let renderIntentKey = '';
+  let eraserIndicatorPoint: PagePoint | null = null;
+  let eraserIndicatorVisible = false;
+  let eraserIndicatorStyle = '';
   let shapeGesture:
     | null
     | {
@@ -77,6 +87,10 @@
 
   function currentStrokeWidth(): number {
     return resolvePresetValue(tool === 'highlighter' ? highlighterStrokeWidths : penStrokeWidths, sizePreset);
+  }
+
+  function currentEraserRadius(): number {
+    return resolvePresetValue(eraserStrokeWidths, sizePreset);
   }
 
   function lineStyle(annotation: ShapeAnnotation): string {
@@ -148,6 +162,7 @@
     if (activePoints.length === 0) {
       activePointerId = null;
       previewAnnotations = null;
+      clearEraserIndicator();
       setInkSession(false);
       return;
     }
@@ -164,7 +179,7 @@
     }
 
     if (tool === 'eraser') {
-      const nextAnnotations = eraseAnnotations(annotations, activePoints, eraserWidth(sizePreset));
+      const nextAnnotations = eraseAnnotations(annotations, activePoints, currentEraserRadius(), { strokeMode: eraserStrokeMode });
       onReplace(layout.page.id, nextAnnotations);
     }
 
@@ -179,6 +194,7 @@
     activePoints = [];
     previewAnnotations = null;
     shapeGesture = null;
+    clearEraserIndicator();
     setInkSession(false);
   }
 
@@ -187,6 +203,7 @@
     activePoints = [];
     previewAnnotations = null;
     shapeGesture = null;
+    clearEraserIndicator();
     setInkSession(false);
   }
 
@@ -206,6 +223,31 @@
 
     inkSessionActive = nextActive;
     onPenSessionChange(nextActive);
+  }
+
+  function updateEraserIndicator(event: PointerEvent): void {
+    if (tool !== 'eraser') {
+      return;
+    }
+
+    const nextPoint = pageCoordinates(event).at(-1);
+    if (!nextPoint) {
+      return;
+    }
+
+    eraserIndicatorPoint = nextPoint;
+    eraserIndicatorVisible = true;
+  }
+
+  function clearEraserIndicator(): void {
+    eraserIndicatorPoint = null;
+    eraserIndicatorVisible = false;
+  }
+
+  function handlePointerLeave(): void {
+    if (activePointerId === null) {
+      clearEraserIndicator();
+    }
   }
 
   function visibleRenderSegments(): PdfRenderSegment[] {
@@ -353,6 +395,7 @@
     event.stopPropagation();
     interactionLayer?.setPointerCapture(event.pointerId);
     setInkSession(true, event.pointerType);
+    updateEraserIndicator(event);
 
     if (tool === 'shape') {
       const [point] = pageCoordinates(event);
@@ -396,6 +439,8 @@
   }
 
   function handlePointerMove(event: PointerEvent): void {
+    updateEraserIndicator(event);
+
     if (activePointerId !== event.pointerId) {
       return;
     }
@@ -414,7 +459,7 @@
     }
 
     if (tool === 'eraser') {
-      previewAnnotations = eraseAnnotations(annotations, activePoints, eraserWidth(sizePreset));
+      previewAnnotations = eraseAnnotations(annotations, activePoints, currentEraserRadius(), { strokeMode: eraserStrokeMode });
       return;
     }
 
@@ -681,10 +726,19 @@
     setInkSession(false);
   }
 
+  $: if (tool !== 'eraser' && eraserIndicatorVisible) {
+    clearEraserIndicator();
+  }
+
   $: previewWidth = Math.max(320, Math.min(Math.ceil(layout.width), 960));
   $: if (layout.page.kind === 'pdf' && previewLoadedPageId !== layout.page.id) {
     previewLoaded = false;
   }
+
+  $: eraserIndicatorStyle =
+    eraserIndicatorPoint && eraserIndicatorVisible
+      ? `width:${currentEraserRadius() * 2 * layout.scale}px; height:${currentEraserRadius() * 2 * layout.scale}px; left:${eraserIndicatorPoint.x * layout.scale - currentEraserRadius() * layout.scale}px; top:${eraserIndicatorPoint.y * layout.scale - currentEraserRadius() * layout.scale}px;`
+      : '';
 </script>
 
 <article
@@ -780,10 +834,15 @@
       on:dblclick={tool === 'text' ? addText : undefined}
       on:pointercancel={handlePointerCancel}
       on:pointerdown={handlePointerDown}
+      on:pointerleave={handlePointerLeave}
       on:lostpointercapture={handleLostPointerCapture}
       on:pointermove={handlePointerMove}
       on:pointerup={handlePointerUp}
     ></div>
+
+    {#if tool === 'eraser' && eraserIndicatorPoint && eraserIndicatorVisible}
+      <div class="eraser-indicator" style={eraserIndicatorStyle}></div>
+    {/if}
 
     {#if tool === 'shape' && selectedShape}
       <div class="shape-handle" style={`left:${selectedShape.x * layout.scale - 7}px; top:${selectedShape.y * layout.scale - 7}px;`}></div>

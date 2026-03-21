@@ -1,10 +1,12 @@
-export type AdjustableStrokeTool = 'pen' | 'highlighter';
+export type AdjustableStrokeTool = 'pen' | 'highlighter' | 'eraser';
+export type EraserStrokeMode = 'whole' | 'partial';
 
 export type StrokePresetValues = [number, number, number];
 
 export interface StrokePresetSettings {
   pen: StrokePresetValues;
   highlighter: StrokePresetValues;
+  eraser: StrokePresetValues;
 }
 
 export interface StrokeBounds {
@@ -14,21 +16,25 @@ export interface StrokeBounds {
 }
 
 const STORAGE_KEY = 'inkflowStrokePresetSettings.v1';
+const ERASER_MODE_STORAGE_KEY = 'inkflowEraserStrokeMode.v1';
 
 export const DEFAULT_STROKE_PRESET_SETTINGS: StrokePresetSettings = {
   pen: [2, 4, 7],
-  highlighter: [10, 18, 26]
+  highlighter: [10, 18, 26],
+  eraser: [10, 18, 28]
 };
 
 export const STROKE_BOUNDS: Record<AdjustableStrokeTool, StrokeBounds> = {
   pen: { min: 1, max: 12, step: 0.1 },
-  highlighter: { min: 6, max: 32, step: 0.5 }
+  highlighter: { min: 6, max: 32, step: 0.5 },
+  eraser: { min: 6, max: 42, step: 1 }
 };
 
 export function cloneStrokePresetSettings(source = DEFAULT_STROKE_PRESET_SETTINGS): StrokePresetSettings {
   return {
     pen: [...source.pen] as StrokePresetValues,
-    highlighter: [...source.highlighter] as StrokePresetValues
+    highlighter: [...source.highlighter] as StrokePresetValues,
+    eraser: [...source.eraser] as StrokePresetValues
   };
 }
 
@@ -59,7 +65,8 @@ export function loadStrokePresetSettings(): StrokePresetSettings {
     const parsed = JSON.parse(raw) as Partial<Record<AdjustableStrokeTool, unknown>>;
     return {
       pen: normalizeToolValues('pen', parsed.pen),
-      highlighter: normalizeToolValues('highlighter', parsed.highlighter)
+      highlighter: normalizeToolValues('highlighter', parsed.highlighter),
+      eraser: normalizeToolValues('eraser', parsed.eraser)
     };
   } catch {
     return cloneStrokePresetSettings();
@@ -75,6 +82,31 @@ export function saveStrokePresetSettings(settings: StrokePresetSettings): void {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch {
     // Ignore storage failures so drawing never depends on persistence.
+  }
+}
+
+export function loadEraserStrokeMode(): EraserStrokeMode {
+  if (typeof window === 'undefined') {
+    return 'whole';
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ERASER_MODE_STORAGE_KEY);
+    return raw === 'partial' ? 'partial' : 'whole';
+  } catch {
+    return 'whole';
+  }
+}
+
+export function saveEraserStrokeMode(mode: EraserStrokeMode): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(ERASER_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage failures so interaction never depends on persistence.
   }
 }
 

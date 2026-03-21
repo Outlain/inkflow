@@ -35,13 +35,16 @@
     STROKE_BOUNDS,
     cloneStrokePresetSettings,
     formatStrokeWidth,
+    loadEraserStrokeMode,
     loadStrokePresetSettings,
     resetStrokePresetWidth,
+    saveEraserStrokeMode,
     saveStrokePresetSettings,
     strokePresetIndicatorSize,
     toolStrokeWidthFromSettings,
     updateStrokePresetWidth,
     type AdjustableStrokeTool,
+    type EraserStrokeMode,
     type StrokePresetSettings
   } from '../strokeSettings';
 
@@ -58,6 +61,9 @@
     saving: boolean;
     saveError: string;
     clientRevision: number;
+    localChangeCounter: number;
+    undoStack: Annotation[][];
+    redoStack: Annotation[][];
   }
 
   interface SaveItem {
@@ -100,6 +106,7 @@
   const layoutEngine = new ReaderLayoutEngine();
   const zoomLevels = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
   const ZOOM_EPSILON = 0.001;
+  const MAX_PAGE_HISTORY = 50;
   const toolOrder: EditorTool[] = ['pen', 'highlighter', 'eraser', 'text', 'shape', 'hand'];
   const colorChips = ['#123f63', '#c74b35', '#2f8a78', '#8e5fa4', '#d48a2c', '#121212'];
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
@@ -123,6 +130,8 @@
   let selectedSize = 2;
   let strokePresetSettings: StrokePresetSettings = cloneStrokePresetSettings();
   let strokePresetSettingsLoaded = false;
+  let eraserStrokeMode: EraserStrokeMode = 'whole';
+  let eraserStrokeModeLoaded = false;
   let selectedShapeKind: ShapeKind = 'rectangle';
   let selectedShapeFill = false;
   let selectedShapeLineStyle: LineStyle = 'solid';
@@ -146,6 +155,7 @@
   let compactPagesOpen = false;
   let compactInspectorOpen = false;
   let pageStates: Record<string, PageRuntimeState> = {};
+  let lastEditedPageId: string | null = null;
 
   const pendingSaves = new Map<string, SaveItem[]>();
   const drainingPages = new Set<string>();
@@ -165,6 +175,9 @@
   let pendingZoomUpdate: PendingZoomUpdate | null = null;
   let strokePopover: StrokePopoverState | null = null;
   let strokePopoverBackdropVisible = false;
+  let strokePopoverWidth = 0;
+  let strokePopoverWidthLabel = '';
+  let strokePopoverSampleStyle = '';
   let longPressTimer = 0;
   let suppressedClickKey = '';
   let compactHeaderShown = false;
@@ -172,8 +185,32 @@
   let readerScreen: HTMLDivElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let syncSocket: WebSocket | null = null;
+  let currentPageRecord: DocumentBundle['pages'][number] | null = null;
+  let historyTargetPageRecord: DocumentBundle['pages'][number] | null = null;
+  let currentUndoCount = 0;
+  let currentRedoCount = 0;
+  let historyUndoCount = 0;
+  let historyRedoCount = 0;
+  let canUndoAvailable = false;
+  let canRedoAvailable = false;
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
+  $: strokePopoverWidth = strokePopover ? currentStrokePresetValue(strokePopover.tool, strokePopover.preset) : 0;
+  $: strokePopoverWidthLabel = formatStrokeWidth(strokePopoverWidth);
+  $: strokePopoverSampleStyle = strokePopover
+    ? `height:${Math.min(18, Math.max(3, strokePopoverWidth))}px; background:${strokePopover.tool === 'eraser' ? 'rgba(255,255,255,0.94)' : selectedColor}; opacity:${strokePopover.tool === 'highlighter' ? 0.34 : 1}; box-shadow:${strokePopover.tool === 'eraser' ? '0 0 0 1px rgba(42,34,29,0.12) inset' : 'none'};`
+    : '';
+  $: currentPageRecord = bundle?.pages[activePageIndex] ?? null;
+  $: historyTargetPageRecord =
+    currentPageRecord && (pageStates[currentPageRecord.id]?.undoStack?.length ?? 0) > 0
+      ? currentPageRecord
+      : pageById(lastEditedPageId) ?? currentPageRecord;
+  $: currentUndoCount = currentPageRecord ? pageStates[currentPageRecord.id]?.undoStack?.length ?? 0 : 0;
+  $: currentRedoCount = currentPageRecord ? pageStates[currentPageRecord.id]?.redoStack?.length ?? 0 : 0;
+  $: historyUndoCount = historyTargetPageRecord ? pageStates[historyTargetPageRecord.id]?.undoStack?.length ?? 0 : 0;
+  $: historyRedoCount = historyTargetPageRecord ? pageStates[historyTargetPageRecord.id]?.redoStack?.length ?? 0 : 0;
+  $: canUndoAvailable = historyUndoCount > 0;
+  $: canRedoAvailable = historyRedoCount > 0;
 
   function defaultPageState(): PageRuntimeState {
     return {
@@ -186,7 +223,19 @@
       dirty: false,
       saving: false,
       saveError: '',
-      clientRevision: 0
+      clientRevision: 0,
+      localChangeCounter: 0,
+      undoStack: [],
+      redoStack: []
+    };
+  }
+
+  function normalizePageState(state?: Partial<PageRuntimeState>): PageRuntimeState {
+    return {
+      ...defaultPageState(),
+      ...state,
+      undoStack: state?.undoStack ?? [],
+      redoStack: state?.redoStack ?? []
     };
   }
 
@@ -204,8 +253,31 @@
   function setPageState(pageId: string, next: PageRuntimeState): void {
     pageStates = {
       ...pageStates,
-      [pageId]: next
+      [pageId]: normalizePageState(next)
     };
+  }
+
+  function pageIndexForId(pageId: string): number {
+    return bundle?.pages.findIndex((page) => page.id === pageId) ?? -1;
+  }
+
+  function focusEditedPage(pageId: string): void {
+    const index = pageIndexForId(pageId);
+    if (index >= 0 && index !== activePageIndex) {
+      activePageIndex = index;
+    }
+  }
+
+  function pageById(pageId: string | null) {
+    if (!bundle || !pageId) {
+      return null;
+    }
+
+    return bundle.pages.find((page) => page.id === pageId) ?? null;
+  }
+
+  function historyTargetPage() {
+    return historyTargetPageRecord;
   }
 
   function fileLookup(page: { sourceFileId: string | null }): FileRecord | null {
@@ -217,7 +289,7 @@
   }
 
   function currentPage() {
-    return bundle?.pages[activePageIndex] ?? null;
+    return currentPageRecord;
   }
 
   function currentZoomLabel(): string {
@@ -246,7 +318,31 @@
   }
 
   function adjustableStrokeTool(tool: EditorTool): AdjustableStrokeTool | null {
-    return tool === 'pen' || tool === 'highlighter' ? tool : null;
+    return tool === 'pen' || tool === 'highlighter' || tool === 'eraser' ? tool : null;
+  }
+
+  function strokeToolLabel(tool: AdjustableStrokeTool): string {
+    if (tool === 'highlighter') {
+      return 'Highlighter';
+    }
+
+    if (tool === 'eraser') {
+      return 'Eraser';
+    }
+
+    return 'Pen';
+  }
+
+  function strokePopoverTitle(tool: AdjustableStrokeTool): string {
+    return tool === 'eraser' ? 'Eraser size' : `${strokeToolLabel(tool)} thickness`;
+  }
+
+  function strokeSettingsButtonLabel(tool: EditorTool | AdjustableStrokeTool): string {
+    if (tool !== 'pen' && tool !== 'highlighter' && tool !== 'eraser') {
+      return 'Open stroke settings';
+    }
+
+    return tool === 'eraser' ? 'Open eraser size settings' : `Open ${tool} thickness settings`;
   }
 
   function sizeButtonKey(tool: AdjustableStrokeTool, preset: number): string {
@@ -266,11 +362,7 @@
   }
 
   function currentPopoverStrokeWidth(): number {
-    if (!strokePopover) {
-      return 0;
-    }
-
-    return currentStrokePresetValue(strokePopover.tool, strokePopover.preset);
+    return strokePopoverWidth;
   }
 
   function strokePresetDotStyle(preset: number): string {
@@ -280,14 +372,7 @@
   }
 
   function strokeSampleStyle(): string {
-    if (!strokePopover) {
-      return '';
-    }
-
-    const width = currentPopoverStrokeWidth();
-    const height = Math.min(18, Math.max(3, width));
-    const opacity = strokePopover.tool === 'highlighter' ? 0.34 : 1;
-    return `height:${height}px; background:${selectedColor}; opacity:${opacity};`;
+    return strokePopoverSampleStyle;
   }
 
   function openStrokePopover(tool: AdjustableStrokeTool, preset: number, target: HTMLElement | null): void {
@@ -312,11 +397,13 @@
       top,
       arrowLeft
     };
+    strokePopoverWidth = currentStrokePresetValue(tool, preset);
     strokePopoverBackdropVisible = true;
   }
 
   function closeStrokePopover(): void {
     strokePopover = null;
+    strokePopoverWidth = 0;
     strokePopoverBackdropVisible = false;
   }
 
@@ -328,7 +415,15 @@
   }
 
   function scheduleStrokePopoverLongPress(event: PointerEvent, tool: AdjustableStrokeTool, preset: number, key: string): void {
-    if (event.pointerType === 'mouse' && event.button !== 0) {
+    if (usesExplicitStrokeSettingsTrigger()) {
+      return;
+    }
+
+    if (event.pointerType !== 'mouse') {
+      return;
+    }
+
+    if (event.button !== 0) {
       return;
     }
 
@@ -350,14 +445,24 @@
     return true;
   }
 
-  function handleToolButtonClick(tool: EditorTool): void {
+  function handleToolButtonClick(event: MouseEvent, tool: EditorTool): void {
     const adjustableTool = adjustableStrokeTool(tool);
     if (adjustableTool && shouldSuppressClick(toolButtonKey(adjustableTool))) {
       return;
     }
 
+    const target = event.currentTarget as HTMLElement | null;
+    if (adjustableTool && selectedTool === tool && !usesExplicitStrokeSettingsTrigger()) {
+      if (strokePopover && strokePopover.tool === adjustableTool && strokePopover.preset === selectedSize) {
+        closeStrokePopover();
+      } else {
+        openStrokePopover(adjustableTool, selectedSize, target);
+      }
+      return;
+    }
+
     selectedTool = tool;
-    if (!adjustableTool) {
+    if (!adjustableTool || (strokePopover && strokePopover.tool !== adjustableTool)) {
       closeStrokePopover();
     }
   }
@@ -365,6 +470,10 @@
   function handleToolButtonPointerDown(event: PointerEvent, tool: EditorTool): void {
     const adjustableTool = adjustableStrokeTool(tool);
     if (!adjustableTool) {
+      return;
+    }
+
+    if (usesExplicitStrokeSettingsTrigger()) {
       return;
     }
 
@@ -376,9 +485,19 @@
     openStrokePopover(tool, preset, event.currentTarget as HTMLElement | null);
   }
 
-  function handleSizePresetSelect(preset: number): void {
+  function handleSizePresetSelect(event: MouseEvent, preset: number): void {
     const tool = currentAdjustableStrokeTool();
     if (tool && shouldSuppressClick(sizeButtonKey(tool, preset))) {
+      return;
+    }
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (tool && selectedSize === preset && !usesExplicitStrokeSettingsTrigger()) {
+      if (strokePopover && strokePopover.tool === tool && strokePopover.preset === preset) {
+        closeStrokePopover();
+      } else {
+        openStrokePopover(tool, preset, target);
+      }
       return;
     }
 
@@ -397,7 +516,34 @@
       return;
     }
 
+    if (usesExplicitStrokeSettingsTrigger()) {
+      return;
+    }
+
     scheduleStrokePopoverLongPress(event, tool, preset, sizeButtonKey(tool, preset));
+  }
+
+  function usesExplicitStrokeSettingsTrigger(): boolean {
+    return compactMode || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
+  }
+
+  function openCurrentStrokeSettings(event: MouseEvent): void {
+    const tool = currentAdjustableStrokeTool();
+    if (!tool) {
+      return;
+    }
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (strokePopover && strokePopover.tool === tool && strokePopover.preset === selectedSize) {
+      closeStrokePopover();
+      return;
+    }
+
+    openStrokePopover(tool, selectedSize, target);
+  }
+
+  function setEraserStrokeMode(mode: EraserStrokeMode): void {
+    eraserStrokeMode = mode;
   }
 
   function updateStrokePopoverWidth(rawValue: string): void {
@@ -410,7 +556,9 @@
       return;
     }
 
-    strokePresetSettings = updateStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset, nextValue);
+    const nextSettings = updateStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset, nextValue);
+    strokePresetSettings = nextSettings;
+    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, strokePopover.tool, strokePopover.preset);
   }
 
   function restoreStrokePopoverPreset(): void {
@@ -418,7 +566,86 @@
       return;
     }
 
-    strokePresetSettings = resetStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset);
+    const nextSettings = resetStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset);
+    strokePresetSettings = nextSettings;
+    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, strokePopover.tool, strokePopover.preset);
+  }
+
+  function nextHistoryStack(stack: Annotation[][], snapshot: Annotation[]): Annotation[][] {
+    const next = [...stack, snapshot];
+    return next.length > MAX_PAGE_HISTORY ? next.slice(next.length - MAX_PAGE_HISTORY) : next;
+  }
+
+  function canUndoCurrentPage(): boolean {
+    return canUndoAvailable;
+  }
+
+  function canRedoCurrentPage(): boolean {
+    return canRedoAvailable;
+  }
+
+  async function undoCurrentPage(): Promise<void> {
+    const page = historyTargetPage();
+    if (!page) {
+      return;
+    }
+
+    const state = ensurePageState(page.id);
+    if (state.undoStack.length === 0) {
+      return;
+    }
+
+    const previousAnnotations = state.undoStack[state.undoStack.length - 1];
+    const nextState: PageRuntimeState = {
+      ...state,
+      annotations: previousAnnotations,
+      annotationText: annotationTextFromAnnotations(previousAnnotations),
+      dirty: true,
+      saveError: '',
+      localChangeCounter: state.localChangeCounter + 1,
+      undoStack: state.undoStack.slice(0, -1),
+      redoStack: nextHistoryStack(state.redoStack, state.annotations)
+    };
+    setPageState(page.id, nextState);
+    focusEditedPage(page.id);
+    lastEditedPageId = page.id;
+    await queueSave(page.id, {
+      mode: 'replace',
+      annotations: previousAnnotations,
+      annotationText: nextState.annotationText
+    });
+  }
+
+  async function redoCurrentPage(): Promise<void> {
+    const page = historyTargetPage();
+    if (!page) {
+      return;
+    }
+
+    const state = ensurePageState(page.id);
+    if (state.redoStack.length === 0) {
+      return;
+    }
+
+    const nextAnnotations = state.redoStack[state.redoStack.length - 1];
+    const nextState: PageRuntimeState = {
+      ...state,
+      annotations: nextAnnotations,
+      annotationText: annotationTextFromAnnotations(nextAnnotations),
+      dirty: true,
+      saveError: '',
+      localChangeCounter: state.localChangeCounter + 1,
+      undoStack: nextHistoryStack(state.undoStack, state.annotations),
+      redoStack: state.redoStack.slice(0, -1)
+    };
+    setPageState(page.id, nextState);
+    focusEditedPage(page.id);
+    lastEditedPageId = page.id;
+    await queueSave(page.id, {
+      mode: 'replace',
+      annotations: nextAnnotations,
+      annotationText: nextState.annotationText
+    });
   }
 
   function syncViewportMode(): void {
@@ -662,6 +889,8 @@
       return;
     }
 
+    const startingLocalChangeCounter = state.localChangeCounter;
+
     setPageState(pageId, {
       ...state,
       loading: true
@@ -679,7 +908,10 @@
         dirty: false,
         saving: false,
         saveError: '',
-        clientRevision: 0
+        clientRevision: 0,
+        localChangeCounter: 0,
+        undoStack: [],
+        redoStack: []
       };
 
       if (
@@ -702,6 +934,11 @@
         };
       } else if (draft && !draft.dirty) {
         await deleteDraft(pageId);
+      }
+
+      const latestState = ensurePageState(pageId);
+      if (!force && latestState.localChangeCounter !== startingLocalChangeCounter) {
+        return;
       }
 
       setPageState(pageId, nextState);
@@ -805,9 +1042,14 @@
       annotations: nextAnnotations,
       annotationText: annotationTextFromAnnotations(nextAnnotations),
       dirty: true,
-      saveError: ''
+      saveError: '',
+      localChangeCounter: state.localChangeCounter + 1,
+      undoStack: nextHistoryStack(state.undoStack, state.annotations),
+      redoStack: []
     };
     setPageState(pageId, nextState);
+    focusEditedPage(pageId);
+    lastEditedPageId = pageId;
     await queueSave(pageId, {
       mode: 'append',
       annotations: appended,
@@ -822,9 +1064,14 @@
       annotations,
       annotationText: annotationTextFromAnnotations(annotations),
       dirty: true,
-      saveError: ''
+      saveError: '',
+      localChangeCounter: state.localChangeCounter + 1,
+      undoStack: nextHistoryStack(state.undoStack, state.annotations),
+      redoStack: []
     };
     setPageState(pageId, nextState);
+    focusEditedPage(pageId);
+    lastEditedPageId = pageId;
     await queueSave(pageId, {
       mode: 'replace',
       annotations,
@@ -887,7 +1134,10 @@
       bundle = nextBundle;
       connectSync(nextBundle.document.id);
       searchState = { indexing: false, results: [] };
-      pageStates = Object.fromEntries(nextBundle.pages.map((page) => [page.id, pageStates[page.id] ?? defaultPageState()]));
+      pageStates = Object.fromEntries(nextBundle.pages.map((page) => [page.id, normalizePageState(pageStates[page.id])]));
+      if (!nextBundle.pages.some((page) => page.id === lastEditedPageId)) {
+        lastEditedPageId = null;
+      }
       statusMessage = `${nextBundle.document.pageCount} pages loaded with fixed shell metadata.`;
       await tick();
       recalcLayout('document-load');
@@ -909,7 +1159,26 @@
   async function replaceBundle(nextBundle: DocumentBundle, focusPageId?: string): Promise<void> {
     bundle = nextBundle;
     connectSync(nextBundle.document.id);
-    pageStates = Object.fromEntries(nextBundle.pages.map((page) => [page.id, pageStates[page.id] ?? defaultPageState()]));
+    pageStates = Object.fromEntries(
+      nextBundle.pages.map((page) => {
+        const current = pageStates[page.id];
+        if (!current) {
+          return [page.id, defaultPageState()];
+        }
+
+        return [
+          page.id,
+          normalizePageState({
+            ...current,
+            undoStack: [],
+            redoStack: []
+          })
+        ];
+      })
+    );
+    if (!nextBundle.pages.some((page) => page.id === lastEditedPageId)) {
+      lastEditedPageId = null;
+    }
     await tick();
     recalcLayout('bundle-update');
     await tick();
@@ -1274,6 +1543,8 @@
     syncViewportMode();
     strokePresetSettings = loadStrokePresetSettings();
     strokePresetSettingsLoaded = true;
+    eraserStrokeMode = loadEraserStrokeMode();
+    eraserStrokeModeLoaded = true;
     void loadDocument();
 
     resizeObserver = new ResizeObserver(() => {
@@ -1316,6 +1587,10 @@
 
   $: if (strokePresetSettingsLoaded) {
     saveStrokePresetSettings(strokePresetSettings);
+  }
+
+  $: if (eraserStrokeModeLoaded) {
+    saveEraserStrokeMode(eraserStrokeMode);
   }
 
   $: if (strokePopover && selectedTool !== strokePopover.tool) {
@@ -1377,8 +1652,8 @@
             ⋯
           </button>
         {:else}
-          <button class="icon-button" type="button" disabled>Undo</button>
-          <button class="icon-button" type="button" disabled>Redo</button>
+          <button class="icon-button" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>Undo</button>
+          <button class="icon-button" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>Redo</button>
           <button class="icon-button" type="button" on:click={() => changeZoom(-1)}>-</button>
           <button class="zoom-pill" type="button" aria-label="Reset zoom to 100%" on:click={resetZoom}>{zoomLabel}</button>
           <button class="icon-button" type="button" on:click={() => changeZoom(1)}>+</button>
@@ -1396,7 +1671,7 @@
               class:active={selectedTool === tool}
               class="tool-pill"
               type="button"
-              on:click={() => handleToolButtonClick(tool)}
+              on:click={(event) => handleToolButtonClick(event, tool)}
               on:contextmenu|preventDefault={(event) => {
                 const adjustableTool = adjustableStrokeTool(tool);
                 if (adjustableTool) {
@@ -1468,7 +1743,7 @@
                 class="size-button"
                 type="button"
                 aria-label={preset.label}
-                on:click={() => handleSizePresetSelect(preset.value)}
+                on:click={(event) => handleSizePresetSelect(event, preset.value)}
                 on:contextmenu|preventDefault={(event) => {
                   const tool = currentAdjustableStrokeTool();
                   if (tool) {
@@ -1484,6 +1759,20 @@
               </button>
             {/each}
           </div>
+
+          {#if selectedTool === 'pen' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
+            <button
+              class:active={strokePopover && strokePopover.tool === selectedTool}
+              class="size-button stroke-settings-trigger"
+              type="button"
+              aria-label={strokeSettingsButtonLabel(selectedTool)}
+              on:click={openCurrentStrokeSettings}
+            >
+              <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
+                <path d="M4 7h10M4 17h16M14 7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8 17a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+              </svg>
+            </button>
+          {/if}
         </div>
 
         <div class="save-pill">{globalSaveLabel()}</div>
@@ -1497,7 +1786,7 @@
 
   {#if strokePopover}
     <div
-      aria-label={`${strokePopover.tool === 'pen' ? 'Pen' : 'Highlighter'} thickness settings`}
+      aria-label={`${strokeToolLabel(strokePopover.tool)} settings`}
       class="stroke-popover"
       role="dialog"
       style={`left:${strokePopover.left}px; top:${strokePopover.top}px;`}
@@ -1508,15 +1797,36 @@
           <path d="M4 7h10M4 17h16M14 7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8 17a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
         </svg>
         <div class="stroke-popover-header-copy">
-          <strong>{strokePopover.tool === 'pen' ? 'Pen thickness' : 'Highlighter thickness'}</strong>
+          <strong>{strokePopoverTitle(strokePopover.tool)}</strong>
           <span>Preset {strokePopover.preset}</span>
         </div>
       </div>
 
+      {#if strokePopover.tool === 'eraser'}
+        <div class="stroke-popover-mode-group" role="group" aria-label="Eraser mode">
+          <button
+            class:active={eraserStrokeMode === 'whole'}
+            class="stroke-mode-button"
+            type="button"
+            on:click={() => setEraserStrokeMode('whole')}
+          >
+            Whole stroke
+          </button>
+          <button
+            class:active={eraserStrokeMode === 'partial'}
+            class="stroke-mode-button"
+            type="button"
+            on:click={() => setEraserStrokeMode('partial')}
+          >
+            Partial
+          </button>
+        </div>
+      {/if}
+
       <div class="stroke-popover-preview">
-        <span class="stroke-popover-value">{formatStrokeWidth(currentPopoverStrokeWidth())}</span>
+        <span class="stroke-popover-value">{strokePopoverWidthLabel}</span>
         <div class="stroke-popover-preview-rail">
-          <div class="stroke-popover-preview-line" style={strokeSampleStyle()}></div>
+          <div class="stroke-popover-preview-line" style={strokePopoverSampleStyle}></div>
         </div>
       </div>
 
@@ -1526,7 +1836,7 @@
         min={STROKE_BOUNDS[strokePopover.tool].min}
         step={STROKE_BOUNDS[strokePopover.tool].step}
         type="range"
-        value={currentPopoverStrokeWidth()}
+        value={strokePopoverWidth}
         on:input={(event) => updateStrokePopoverWidth((event.currentTarget as HTMLInputElement).value)}
       />
 
@@ -1585,10 +1895,10 @@
       {#if compactMode && bundle}
         <div class="reader-toolbar-floating">
           <div class="reader-toolbar-row compact-toolbar compact-toolbar-strip">
-            <button class="tool-pill icon-only compact-tool-button compact-tool-button-undo" type="button" aria-label="Undo" disabled>
+            <button class="tool-pill icon-only compact-tool-button compact-tool-button-undo" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>
               <span class="compact-tool-icon compact-tool-icon-undo">↺</span>
             </button>
-            <button class="tool-pill icon-only compact-tool-button compact-tool-button-redo" type="button" aria-label="Redo" disabled>
+            <button class="tool-pill icon-only compact-tool-button compact-tool-button-redo" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>
               <span class="compact-tool-icon compact-tool-icon-redo">↻</span>
             </button>
 
@@ -1598,7 +1908,7 @@
                 class={`tool-pill icon-only compact-tool-button compact-tool-button-${tool}`}
                 type="button"
                 aria-label={toolLabel(tool)}
-                on:click={() => handleToolButtonClick(tool)}
+                on:click={(event) => handleToolButtonClick(event, tool)}
                 on:contextmenu|preventDefault={(event) => {
                   const adjustableTool = adjustableStrokeTool(tool);
                   if (adjustableTool) {
@@ -1696,7 +2006,7 @@
                     class="size-button"
                     type="button"
                     aria-label={preset.label}
-                    on:click={() => handleSizePresetSelect(preset.value)}
+                    on:click={(event) => handleSizePresetSelect(event, preset.value)}
                     on:contextmenu|preventDefault={(event) => {
                       const tool = currentAdjustableStrokeTool();
                       if (tool) {
@@ -1712,6 +2022,20 @@
                   </button>
                 {/each}
               </div>
+            {/if}
+
+            {#if selectedTool === 'pen' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
+              <button
+                class:active={strokePopover && strokePopover.tool === selectedTool}
+                class="tool-pill icon-only compact-tool-button stroke-settings-trigger"
+                type="button"
+                aria-label={strokeSettingsButtonLabel(selectedTool)}
+                on:click={openCurrentStrokeSettings}
+              >
+                <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
+                  <path d="M4 7h10M4 17h16M14 7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8 17a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+                </svg>
+              </button>
             {/if}
 
             <button
@@ -1763,6 +2087,8 @@
                 tool={selectedTool}
                 color={selectedColor}
                 highlighterStrokeWidths={strokePresetSettings.highlighter}
+                eraserStrokeWidths={strokePresetSettings.eraser}
+                eraserStrokeMode={eraserStrokeMode}
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
                 shapeLineStyle={selectedShapeLineStyle}

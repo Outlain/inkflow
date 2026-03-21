@@ -558,6 +558,9 @@ img {
   background: transparent;
   border: 0;
   padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .stroke-popover {
@@ -570,6 +573,9 @@ img {
   color: #f7f4ee;
   box-shadow: 0 20px 44px rgba(24, 20, 18, 0.32);
   backdrop-filter: blur(18px);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .stroke-popover-arrow {
@@ -618,6 +624,30 @@ img {
   gap: 14px;
   align-items: center;
   margin-top: 18px;
+}
+
+.stroke-popover-mode-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.stroke-mode-button {
+  padding: 11px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(247, 244, 238, 0.9);
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.stroke-mode-button.active {
+  background: rgba(90, 163, 255, 0.18);
+  border-color: rgba(90, 163, 255, 0.4);
+  color: #fffdfa;
 }
 
 .stroke-popover-value {
@@ -756,6 +786,9 @@ img {
   padding: 12px 18px;
   background: rgba(255, 255, 255, 0.82);
   color: #2c6b92;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .reader-toolbar-row.compact-toolbar .tool-pill,
@@ -989,6 +1022,9 @@ img {
   display: flex;
   justify-content: center;
   pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .reader-screen.compact-mode.compact-header-open .reader-toolbar-floating {
@@ -1109,6 +1145,24 @@ img {
 .compact-save-pill {
   min-height: 34px;
   min-width: 0;
+}
+
+.size-button,
+.shape-button,
+.color-chip,
+.zoom-pill,
+.save-pill,
+.compact-top-button {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+
+.stroke-settings-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .compact-zoom-pill,
@@ -1233,6 +1287,16 @@ img {
   border: 2px solid #244f71;
   box-shadow: 0 6px 14px rgba(36, 55, 76, 0.16);
   z-index: 4;
+  pointer-events: none;
+}
+
+.eraser-indicator {
+  position: absolute;
+  z-index: 4;
+  border: 2px solid rgba(36, 79, 113, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.46) inset;
   pointer-events: none;
 }
 
