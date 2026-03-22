@@ -1,13 +1,13 @@
-import type { Annotation, PagePoint, StrokeAnnotation, TextAnnotation, ShapeAnnotation } from '@shared/contracts';
+import type { PageAnnotation, PagePoint, StrokeAnnotation, TextAnnotation, StickyNoteAnnotation, ShapeAnnotation } from '@shared/contracts';
 import { DEFAULT_STROKE_PRESET_SETTINGS, resolvePresetValue, type EraserStrokeMode } from './strokeSettings';
 
 export interface EraseAnnotationsOptions {
   strokeMode?: EraserStrokeMode;
 }
 
-export function annotationTextFromAnnotations(annotations: Annotation[]): string {
+export function annotationTextFromAnnotations(annotations: PageAnnotation[]): string {
   return annotations
-    .filter((annotation): annotation is TextAnnotation => annotation.type === 'text')
+    .filter((annotation): annotation is TextAnnotation | StickyNoteAnnotation => annotation.type === 'text' || annotation.type === 'sticky')
     .map((annotation) => annotation.text.trim())
     .filter(Boolean)
     .join('\n');
@@ -40,11 +40,11 @@ export function shapePath(annotation: ShapeAnnotation, scale: number): string {
 }
 
 export function eraseAnnotations(
-  annotations: Annotation[],
+  annotations: PageAnnotation[],
   eraserPoints: PagePoint[],
   radius: number,
   options: EraseAnnotationsOptions = {}
-): Annotation[] {
+): PageAnnotation[] {
   if (eraserPoints.length === 0) {
     return annotations;
   }
@@ -61,7 +61,7 @@ export function eraseAnnotations(
       return strokePointHit(annotation, eraserPoints, radiusSquared) ? [] : [annotation];
     }
 
-    if (annotation.type === 'text') {
+    if (annotation.type === 'text' || annotation.type === 'sticky') {
       return textHit(annotation, eraserPoints) ? [] : [annotation];
     }
 
@@ -120,7 +120,7 @@ function pointHit(point: PagePoint, eraserPoints: PagePoint[], radiusSquared: nu
   return eraserPoints.some((eraserPoint) => distanceSquared(point, eraserPoint) <= radiusSquared);
 }
 
-function textHit(annotation: TextAnnotation, eraserPoints: PagePoint[]): boolean {
+function textHit(annotation: TextAnnotation | StickyNoteAnnotation, eraserPoints: PagePoint[]): boolean {
   return eraserPoints.some((point) => point.x >= annotation.x && point.x <= annotation.x + annotation.width && point.y >= annotation.y && point.y <= annotation.y + annotation.height);
 }
 
@@ -236,9 +236,27 @@ export function stabilizeStrokePoints(points: PagePoint[], stabilization: number
   return trimStrokeTails(smoothed, amount);
 }
 
+export function stabilizePencilStrokePoints(points: PagePoint[], stabilization: number): PagePoint[] {
+  const amount = Math.max(0, Math.min(100, stabilization));
+  if (amount <= 0 || points.length < 3) {
+    return points.map((point) => ({ ...point }));
+  }
+
+  const radius = amount < 35 ? 1 : amount < 70 ? 2 : 3;
+  const blend = Math.min(0.5, 0.14 + amount / 320);
+  let smoothed = points.map((point) => ({ ...point }));
+  const passes = amount < 55 ? 1 : 2;
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    smoothed = smoothStrokePass(smoothed, radius, blend * (pass === 0 ? 1 : 0.82));
+  }
+
+  return trimStrokeTails(smoothed, Math.max(0, amount - 12));
+}
+
 export function createStroke(params: {
   id: string;
-  tool: 'pen' | 'highlighter';
+  tool: 'pen' | 'pencil' | 'highlighter';
   color: string;
   width: number;
   points: PagePoint[];

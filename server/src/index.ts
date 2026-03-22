@@ -8,6 +8,8 @@ import { getDb } from './db/database.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
 
+const devClientOrigin = 'http://127.0.0.1:5173';
+
 async function createServer() {
   getDb();
 
@@ -58,7 +60,41 @@ async function createServer() {
       return reply.status(404).send({ error: 'Not found.' });
     });
   } else {
-    app.setNotFoundHandler((_request, reply) => reply.status(404).send({ error: 'Not found.' }));
+    app.setNotFoundHandler(async (request, reply) => {
+      const isPageRequest = request.raw.method === 'GET' || request.raw.method === 'HEAD';
+      const isBackendRoute = request.url.startsWith('/api') || request.url.startsWith('/health') || request.url.startsWith('/ws/');
+
+      if (!isPageRequest || isBackendRoute) {
+        return reply.status(404).send({ error: 'Not found.' });
+      }
+
+      const upstreamUrl = new URL(request.raw.url || '/', devClientOrigin);
+      const upstreamResponse = await fetch(upstreamUrl, {
+        method: request.raw.method,
+        headers: {
+          accept: request.headers.accept ?? '*/*'
+        }
+      });
+
+      reply.code(upstreamResponse.status);
+
+      const contentType = upstreamResponse.headers.get('content-type');
+      if (contentType) {
+        reply.header('content-type', contentType);
+      }
+
+      const cacheControl = upstreamResponse.headers.get('cache-control');
+      if (cacheControl) {
+        reply.header('cache-control', cacheControl);
+      }
+
+      if (request.raw.method === 'HEAD') {
+        return reply.send();
+      }
+
+      const body = await upstreamResponse.arrayBuffer();
+      return reply.send(Buffer.from(body));
+    });
   }
 
   return app;

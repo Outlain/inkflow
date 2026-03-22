@@ -7,6 +7,7 @@
     FileRecord,
     LineStyle,
     NotebookTemplate,
+    PageAnnotation,
     SaveMode,
     SearchResponse,
     ShapeKind,
@@ -23,7 +24,7 @@
     searchDocument,
     updateBookmark
   } from '../api';
-  import { annotationTextFromAnnotations } from '../annotations';
+  import { annotationTextFromAnnotations, shapePath, strokePath } from '../annotations';
   import { debugTimeline } from '../debug';
   import { shouldUseDraft } from '../draftConflict';
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
@@ -98,24 +99,46 @@
   }
 
   interface StrokePopoverState {
-    tool: AdjustableStrokeTool;
+    tool: EditorTool;
     preset: number;
     left: number;
     top: number;
     arrowLeft: number;
   }
 
+  type ReaderToolPanel = 'lasso' | 'write' | 'text' | 'shape' | 'sticky' | 'accessories' | 'laser' | 'hand';
+
   const dispatch = createEventDispatcher<{ close: void }>();
   const layoutEngine = new ReaderLayoutEngine();
   const zoomLevels = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
   const ZOOM_EPSILON = 0.001;
   const MAX_PAGE_HISTORY = 50;
-  const toolOrder: EditorTool[] = ['pen', 'highlighter', 'eraser', 'text', 'shape', 'hand'];
+  const toolOrder: EditorTool[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'hand'];
   const colorChips = ['#123f63', '#c74b35', '#2f8a78', '#8e5fa4', '#d48a2c', '#121212'];
+  const GRAPHITE_COLOR = '#4a4f57';
+  const DEFAULT_PEN_COLOR = colorChips[0];
+  const DEFAULT_MARKER_COLOR = colorChips[4];
+  const QUICK_PENCIL_STABILIZATION = 18;
+  const QUICK_MARKER_STABILIZATION = 24;
+  const textSizePresets = [18, 24, 32] as const;
+  const middleMenuItems = [
+    { id: 'lasso' as const, label: 'Lasso', glyph: '⬚', accent: '#8db5d8' },
+    { id: 'pen' as const, label: 'Pen', glyph: '✍', accent: DEFAULT_PEN_COLOR },
+    { id: 'pencil' as const, label: 'Pencil', glyph: '✎', accent: GRAPHITE_COLOR },
+    { id: 'highlighter' as const, label: 'Marker', glyph: '▰', accent: DEFAULT_MARKER_COLOR },
+    { id: 'eraser' as const, label: 'Eraser', glyph: '⌫', accent: '#c55a44' },
+    { id: 'text' as const, label: 'Text', glyph: 'T', accent: '#586f8d' },
+    { id: 'shape' as const, label: 'Shapes', glyph: '▭', accent: '#7c5ca8' },
+    { id: 'sticky' as const, label: 'Sticky', glyph: '▣', accent: '#f0d36d' },
+    { id: 'accessories' as const, label: 'Accessories', glyph: '◌', accent: '#69b8a6' },
+    { id: 'laser' as const, label: 'Laser', glyph: '•', accent: '#f2615f' },
+    { id: 'hand' as const, label: 'Hand', glyph: '✋', accent: '#3c7c66' }
+  ];
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
   const clientId = createClientId();
   const toolGlyphs: Record<EditorTool, string> = {
     pen: '✐',
+    pencil: '✎',
     highlighter: '',
     eraser: '⌫',
     text: 'T',
@@ -131,6 +154,20 @@
   let selectedTool: EditorTool = 'hand';
   let selectedColor = colorChips[0];
   let selectedSize = 2;
+  let activeToolPanel: ReaderToolPanel | null = null;
+  let textFontSize = textSizePresets[1];
+  let stickyNoteColor = '#f5ef83';
+  let lassoMode: 'rectangle' | 'freehand' = 'rectangle';
+  let lassoSelectionCount = 0;
+  let laserPointerMode: 'dot' | 'line' = 'dot';
+  let selectedAnnotationIdsByPage: Record<string, string[]> = {};
+  let rulerVisible = false;
+  let rulerOffsetY = 180;
+  let rulerAngle = 0;
+  let timeKeeperVisible = false;
+  let timeKeeperRunning = false;
+  let timeKeeperSeconds = 0;
+  let timeKeeperTimer = 0;
   let strokePresetSettings: StrokePresetSettings = cloneStrokePresetSettings();
   let strokePresetSettingsLoaded = false;
   let eraserStrokeMode: EraserStrokeMode = 'whole';
@@ -192,6 +229,16 @@
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame = 0;
   let syncSocket: WebSocket | null = null;
+  let rulerGesture:
+    | null
+    | {
+        mode: 'move' | 'rotate';
+        pointerId: number;
+        startClientX: number;
+        startClientY: number;
+        startOffsetY: number;
+        startAngle: number;
+      } = null;
   let currentPageRecord: DocumentBundle['pages'][number] | null = null;
   let historyTargetPageRecord: DocumentBundle['pages'][number] | null = null;
   let currentUndoCount = 0;
@@ -204,11 +251,11 @@
   let draftsAvailable = true;
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
-  $: strokePopoverWidth = strokePopover ? currentStrokePresetValue(strokePopover.tool, strokePopover.preset) : 0;
+  $: strokePopoverWidth = strokePopover && adjustableStrokeTool(strokePopover.tool) ? currentStrokePresetValue(adjustableStrokeTool(strokePopover.tool)!, strokePopover.preset) : 0;
   $: strokePopoverWidthLabel = formatStrokeWidth(strokePopoverWidth);
   $: strokeStabilizationLabel = `${strokeStabilization}%`;
   $: strokePopoverSampleStyle = strokePopover
-    ? `height:${Math.min(18, Math.max(3, strokePopoverWidth))}px; background:${strokePopover.tool === 'eraser' ? 'rgba(255,255,255,0.94)' : selectedColor}; opacity:${strokePopover.tool === 'highlighter' ? 0.34 : 1}; box-shadow:${strokePopover.tool === 'eraser' ? '0 0 0 1px rgba(42,34,29,0.12) inset' : 'none'};`
+    ? `height:${Math.min(18, Math.max(3, strokePopoverWidth))}px; background:${strokePopover.tool === 'eraser' ? 'rgba(255,255,255,0.94)' : selectedColor}; opacity:${strokePopover.tool === 'highlighter' ? 0.34 : strokePopover.tool === 'pencil' ? 0.72 : 1}; box-shadow:${strokePopover.tool === 'eraser' ? '0 0 0 1px rgba(42,34,29,0.12) inset' : 'none'};`
     : '';
   $: currentPageRecord = bundle?.pages[activePageIndex] ?? null;
   $: historyTargetPageRecord =
@@ -222,6 +269,7 @@
   $: canUndoAvailable = historyUndoCount > 0;
   $: canRedoAvailable = historyRedoCount > 0;
   $: currentPageAnnotationCount = currentPageRecord ? pageStates[currentPageRecord.id]?.annotations?.length ?? 0 : 0;
+  $: lassoSelectionCount = currentPageRecord ? selectedAnnotationIdsByPage[currentPageRecord.id]?.length ?? 0 : 0;
 
   function defaultPageState(): PageRuntimeState {
     return {
@@ -321,7 +369,11 @@
   }
 
   function toolLabel(tool: EditorTool): string {
-    return tool === 'shape' ? 'Shapes' : tool[0].toUpperCase() + tool.slice(1);
+    if (tool === 'highlighter') {
+      return 'Marker';
+    }
+
+    return tool[0].toUpperCase() + tool.slice(1);
   }
 
   function toolGlyph(tool: EditorTool): string {
@@ -329,31 +381,91 @@
   }
 
   function adjustableStrokeTool(tool: EditorTool): AdjustableStrokeTool | null {
-    return tool === 'pen' || tool === 'highlighter' || tool === 'eraser' ? tool : null;
+    return tool === 'pen' || tool === 'pencil' || tool === 'highlighter' || tool === 'eraser' ? tool : null;
   }
 
-  function strokeToolLabel(tool: AdjustableStrokeTool): string {
+  function strokeToolLabel(tool: EditorTool): string {
+    if (tool === 'pencil') {
+      return 'Pencil';
+    }
+
     if (tool === 'highlighter') {
-      return 'Highlighter';
+      return 'Marker';
     }
 
     if (tool === 'eraser') {
       return 'Eraser';
     }
 
+    if (tool === 'shape') {
+      return 'Shape';
+    }
+
+    if (tool === 'text') {
+      return 'Text';
+    }
+
+    if (tool === 'hand') {
+      return 'Hand';
+    }
+
     return 'Pen';
   }
 
-  function strokePopoverTitle(tool: AdjustableStrokeTool): string {
-    return tool === 'eraser' ? 'Eraser size' : `${strokeToolLabel(tool)} thickness`;
-  }
-
-  function strokeSettingsButtonLabel(tool: EditorTool | AdjustableStrokeTool): string {
-    if (tool !== 'pen' && tool !== 'highlighter' && tool !== 'eraser') {
-      return 'Open stroke settings';
+  function quickPresetLabel(): string {
+    if (selectedTool === 'pencil') {
+      return 'Pencil';
     }
 
-    return tool === 'eraser' ? 'Open eraser size settings' : `Open ${tool} thickness settings`;
+    return toolLabel(selectedTool);
+  }
+
+  function strokePopoverTitle(tool: EditorTool): string {
+    if (tool === 'pen' || tool === 'pencil') {
+      return `${strokeToolLabel(tool)} options`;
+    }
+
+    if (tool === 'highlighter') {
+      return 'Marker options';
+    }
+
+    if (tool === 'eraser') {
+      return 'Eraser options';
+    }
+
+    if (tool === 'shape') {
+      return 'Shape options';
+    }
+
+    if (tool === 'text') {
+      return 'Text options';
+    }
+
+    return 'Navigation options';
+  }
+
+  function strokeSettingsButtonLabel(tool: EditorTool): string {
+    if (tool === 'pen' || tool === 'pencil') {
+      return `Open ${strokeToolLabel(tool)} options`;
+    }
+
+    if (tool === 'highlighter') {
+      return 'Open marker options';
+    }
+
+    if (tool === 'eraser') {
+      return 'Open eraser options';
+    }
+
+    if (tool === 'shape') {
+      return 'Open shape options';
+    }
+
+    if (tool === 'text') {
+      return 'Open text options';
+    }
+
+    return 'Open navigation options';
   }
 
   function sizeButtonKey(tool: AdjustableStrokeTool, preset: number): string {
@@ -368,12 +480,232 @@
     return adjustableStrokeTool(selectedTool);
   }
 
+  function currentToolAccent(): string {
+    if (selectedTool === 'pencil') {
+      return GRAPHITE_COLOR;
+    }
+
+    if (selectedTool === 'highlighter') {
+      return DEFAULT_MARKER_COLOR;
+    }
+
+    if (selectedTool === 'eraser') {
+      return '#c55a44';
+    }
+
+    if (selectedTool === 'shape') {
+      return '#7c5ca8';
+    }
+
+    if (selectedTool === 'text') {
+      return '#586f8d';
+    }
+
+    return '#3c7c66';
+  }
+
+  function panelForTool(tool: EditorTool): ReaderToolPanel {
+    if (tool === 'hand') {
+      return 'hand';
+    }
+
+    if (tool === 'text') {
+      return 'text';
+    }
+
+    if (tool === 'shape') {
+      return 'shape';
+    }
+
+    return 'write';
+  }
+
+  function activateToolPanel(panel: ReaderToolPanel): void {
+    activeToolPanel = activeToolPanel === panel ? null : panel;
+    closeStrokePopover();
+  }
+
+  function applyToolSelection(tool: EditorTool, target: HTMLElement | null = null): void {
+    selectedTool = tool;
+    if (tool === 'text' || tool === 'shape' || tool === 'hand') {
+      activeToolPanel = panelForTool(tool);
+    } else {
+      activeToolPanel = null;
+    }
+
+    if (tool === 'pencil' && selectedColor === DEFAULT_PEN_COLOR) {
+      selectedColor = GRAPHITE_COLOR;
+    }
+
+    if (tool === 'pencil') {
+      strokeStabilization = Math.min(strokeStabilization, QUICK_PENCIL_STABILIZATION);
+    }
+
+    if (tool === 'highlighter') {
+      strokeStabilization = Math.min(strokeStabilization, QUICK_MARKER_STABILIZATION);
+    }
+  }
+
+  function handleMiddleMenuItem(id: ReaderToolPanel | EditorTool, target: HTMLElement | null): void {
+    if (id === 'lasso' || id === 'sticky' || id === 'laser') {
+      selectedTool = id;
+      activeToolPanel = activeToolPanel === id ? null : id;
+      closeStrokePopover();
+      return;
+    }
+
+    if (id === 'accessories') {
+      activeToolPanel = activeToolPanel === id ? null : id;
+      closeStrokePopover();
+      return;
+    }
+
+    if (id === 'pen' || id === 'pencil' || id === 'highlighter' || id === 'eraser' || id === 'text' || id === 'shape' || id === 'hand') {
+      applyToolSelection(id, target);
+    }
+  }
+
+  function canOpenCurrentToolPanel(): boolean {
+    return selectedTool === 'pen' || selectedTool === 'pencil' || selectedTool === 'highlighter' || selectedTool === 'eraser' || selectedTool === 'text' || selectedTool === 'shape' || selectedTool === 'hand';
+  }
+
+  function toggleCurrentToolPanel(): void {
+    if (!canOpenCurrentToolPanel()) {
+      activeToolPanel = null;
+      closeStrokePopover();
+      return;
+    }
+
+    const panel = panelForTool(selectedTool);
+    activeToolPanel = activeToolPanel === panel ? null : panel;
+    closeStrokePopover();
+  }
+
+  function formatTimeKeeper(): string {
+    const minutes = Math.floor(timeKeeperSeconds / 60);
+    const seconds = timeKeeperSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  function setTimeKeeperRunning(next: boolean): void {
+    timeKeeperRunning = next;
+  }
+
+  function resetTimeKeeper(): void {
+    timeKeeperSeconds = 0;
+  }
+
+  function toggleTimeKeeper(): void {
+    timeKeeperVisible = !timeKeeperVisible;
+  }
+
+  function toggleRuler(): void {
+    rulerVisible = !rulerVisible;
+  }
+
+  function clampRulerOffset(offset: number): number {
+    const viewportHeight = centerPane?.clientHeight ?? 0;
+    if (viewportHeight <= 0) {
+      return Math.max(56, offset);
+    }
+
+    return clampValue(offset, 56, Math.max(56, viewportHeight - 72));
+  }
+
+  function startRulerGesture(event: PointerEvent, mode: 'move' | 'rotate'): void {
+    if (!rulerVisible) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    rulerGesture = {
+      mode,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetY: rulerOffsetY,
+      startAngle: rulerAngle
+    };
+  }
+
+  function handleWindowPointerMove(event: PointerEvent): void {
+    if (!rulerGesture || event.pointerId !== rulerGesture.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    if (rulerGesture.mode === 'move') {
+      rulerOffsetY = clampRulerOffset(rulerGesture.startOffsetY + (event.clientY - rulerGesture.startClientY));
+      return;
+    }
+
+    rulerAngle = clampValue(rulerGesture.startAngle + (event.clientX - rulerGesture.startClientX) * 0.16, -45, 45);
+  }
+
+  function endRulerGesture(event?: PointerEvent): void {
+    if (!rulerGesture) {
+      return;
+    }
+
+    if (event && event.pointerId !== rulerGesture.pointerId) {
+      return;
+    }
+
+    rulerGesture = null;
+  }
+
+  function handleSelectionChange(pageId: string, annotationIds: string[]): void {
+    selectedAnnotationIdsByPage = {
+      ...selectedAnnotationIdsByPage,
+      [pageId]: annotationIds
+    };
+
+    const current = currentPage();
+    if (current?.id === pageId) {
+      lassoSelectionCount = annotationIds.length;
+    }
+  }
+
+  async function clearLassoSelection(): Promise<void> {
+    const current = currentPage();
+    if (!current) {
+      return;
+    }
+
+    handleSelectionChange(current.id, []);
+  }
+
+  async function deleteLassoSelection(): Promise<void> {
+    const current = currentPage();
+    if (!current) {
+      return;
+    }
+
+    const selectedIds = selectedAnnotationIdsByPage[current.id] ?? [];
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    const state = ensurePageState(current.id);
+    await replaceAnnotations(
+      current.id,
+      state.annotations.filter((annotation) => !selectedIds.includes(annotation.id))
+    );
+    handleSelectionChange(current.id, []);
+  }
+
   function currentStrokePresetValue(tool: AdjustableStrokeTool, preset: number): number {
     return toolStrokeWidthFromSettings(strokePresetSettings, tool, preset);
   }
 
   function currentPopoverStrokeWidth(): number {
     return strokePopoverWidth;
+  }
+
+  function currentStrokePopoverBounds(): { min: number; max: number; step: number } | null {
+    const tool = strokePopover ? adjustableStrokeTool(strokePopover.tool) : null;
+    return tool ? STROKE_BOUNDS[tool] : null;
   }
 
   function strokePresetDotStyle(preset: number): string {
@@ -386,7 +718,7 @@
     return strokePopoverSampleStyle;
   }
 
-  function openStrokePopover(tool: AdjustableStrokeTool, preset: number, target: HTMLElement | null): void {
+  function openStrokePopover(tool: EditorTool, preset: number, target: HTMLElement | null): void {
     if (!readerScreen || !target) {
       return;
     }
@@ -408,7 +740,8 @@
       top,
       arrowLeft
     };
-    strokePopoverWidth = currentStrokePresetValue(tool, preset);
+    const adjustableTool = adjustableStrokeTool(tool);
+    strokePopoverWidth = adjustableTool ? currentStrokePresetValue(adjustableTool, preset) : 0;
     strokePopoverBackdropVisible = true;
   }
 
@@ -456,26 +789,91 @@
     return true;
   }
 
+  function selectRailAction(actionId: string, target: HTMLElement | null): void {
+    if (actionId === 'pencil') {
+      selectedTool = 'pencil';
+      selectedColor = GRAPHITE_COLOR;
+      selectedSize = 1;
+      strokeStabilization = QUICK_PENCIL_STABILIZATION;
+      activeToolPanel = 'write';
+      return;
+    }
+
+    if (actionId === 'pen') {
+      selectedTool = 'pen';
+      selectedColor = DEFAULT_PEN_COLOR;
+      selectedSize = 2;
+      strokeStabilization = defaultStrokeStabilization();
+      activeToolPanel = 'write';
+      return;
+    }
+
+    if (actionId === 'highlighter') {
+      selectedTool = 'highlighter';
+      selectedColor = DEFAULT_MARKER_COLOR;
+      selectedSize = 3;
+      strokeStabilization = QUICK_MARKER_STABILIZATION;
+      activeToolPanel = 'write';
+      return;
+    }
+
+    if (actionId === 'eraser') {
+      selectedTool = 'eraser';
+      activeToolPanel = 'write';
+      return;
+    }
+
+    if (actionId === 'text') {
+      selectedTool = 'text';
+      activeToolPanel = 'text';
+      return;
+    }
+
+    if (actionId === 'shape') {
+      selectedTool = 'shape';
+      activeToolPanel = 'shape';
+      return;
+    }
+
+    selectedTool = 'hand';
+    activeToolPanel = 'hand';
+  }
+
+  function isRailActionActive(actionId: string): boolean {
+    if (actionId === 'pencil') {
+      return selectedTool === 'pencil';
+    }
+
+    if (actionId === 'pen') {
+      return selectedTool === 'pen';
+    }
+
+    if (actionId === 'highlighter') {
+      return selectedTool === 'highlighter';
+    }
+
+    if (actionId === 'eraser') {
+      return selectedTool === 'eraser';
+    }
+
+    if (actionId === 'text') {
+      return selectedTool === 'text';
+    }
+
+    if (actionId === 'shape') {
+      return selectedTool === 'shape';
+    }
+
+    return selectedTool === 'hand';
+  }
+
   function handleToolButtonClick(event: MouseEvent, tool: EditorTool): void {
     const adjustableTool = adjustableStrokeTool(tool);
     if (adjustableTool && shouldSuppressClick(toolButtonKey(adjustableTool))) {
       return;
     }
 
-    const target = event.currentTarget as HTMLElement | null;
-    if (adjustableTool && selectedTool === tool && !usesExplicitStrokeSettingsTrigger()) {
-      if (strokePopover && strokePopover.tool === adjustableTool && strokePopover.preset === selectedSize) {
-        closeStrokePopover();
-      } else {
-        openStrokePopover(adjustableTool, selectedSize, target);
-      }
-      return;
-    }
-
-    selectedTool = tool;
-    if (!adjustableTool || (strokePopover && strokePopover.tool !== adjustableTool)) {
-      closeStrokePopover();
-    }
+    applyToolSelection(tool, event.currentTarget as HTMLElement | null);
   }
 
   function handleToolButtonPointerDown(event: PointerEvent, tool: EditorTool): void {
@@ -491,7 +889,7 @@
     scheduleStrokePopoverLongPress(event, adjustableTool, selectedSize, toolButtonKey(adjustableTool));
   }
 
-  function openStrokePopoverFromContextMenu(event: MouseEvent, tool: AdjustableStrokeTool, preset: number): void {
+  function openStrokePopoverFromContextMenu(event: MouseEvent, tool: EditorTool, preset: number): void {
     event.preventDefault();
     openStrokePopover(tool, preset, event.currentTarget as HTMLElement | null);
   }
@@ -539,18 +937,13 @@
   }
 
   function openCurrentStrokeSettings(event: MouseEvent): void {
-    const tool = currentAdjustableStrokeTool();
-    if (!tool) {
-      return;
-    }
-
     const target = event.currentTarget as HTMLElement | null;
-    if (strokePopover && strokePopover.tool === tool && strokePopover.preset === selectedSize) {
+    if (strokePopover && strokePopover.tool === selectedTool && strokePopover.preset === selectedSize) {
       closeStrokePopover();
       return;
     }
 
-    openStrokePopover(tool, selectedSize, target);
+    openStrokePopover(selectedTool, selectedSize, target);
   }
 
   function setEraserStrokeMode(mode: EraserStrokeMode): void {
@@ -575,14 +968,19 @@
       return;
     }
 
+    const adjustableTool = adjustableStrokeTool(strokePopover.tool);
+    if (!adjustableTool) {
+      return;
+    }
+
     const nextValue = Number.parseFloat(rawValue);
     if (!Number.isFinite(nextValue)) {
       return;
     }
 
-    const nextSettings = updateStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset, nextValue);
+    const nextSettings = updateStrokePresetWidth(strokePresetSettings, adjustableTool, strokePopover.preset, nextValue);
     strokePresetSettings = nextSettings;
-    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, strokePopover.tool, strokePopover.preset);
+    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, adjustableTool, strokePopover.preset);
   }
 
   function restoreStrokePopoverPreset(): void {
@@ -590,9 +988,14 @@
       return;
     }
 
-    const nextSettings = resetStrokePresetWidth(strokePresetSettings, strokePopover.tool, strokePopover.preset);
+    const adjustableTool = adjustableStrokeTool(strokePopover.tool);
+    if (!adjustableTool) {
+      return;
+    }
+
+    const nextSettings = resetStrokePresetWidth(strokePresetSettings, adjustableTool, strokePopover.preset);
     strokePresetSettings = nextSettings;
-    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, strokePopover.tool, strokePopover.preset);
+    strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, adjustableTool, strokePopover.preset);
   }
 
   function nextHistoryStack(stack: Annotation[][], snapshot: Annotation[]): Annotation[][] {
@@ -743,6 +1146,26 @@
 
   function thumbnailPreviewWidth(): number {
     return compactMode ? 120 : 240;
+  }
+
+  function thumbnailAnnotations(pageId: string): PageAnnotation[] {
+    return (pageStates[pageId]?.annotations ?? []) as PageAnnotation[];
+  }
+
+  function thumbnailStrokeOpacity(annotation: PageAnnotation): number {
+    if (annotation.type !== 'stroke') {
+      return 1;
+    }
+
+    if (annotation.tool === 'highlighter') {
+      return 0.3;
+    }
+
+    if (annotation.tool === 'pencil') {
+      return 0.72;
+    }
+
+    return 1;
   }
 
   function toggleCompactPages(): void {
@@ -1195,12 +1618,13 @@
   }
 
   function recalcLayout(reason: string): void {
-    if (!bundle || !centerPane || centerPane.clientWidth === 0) {
+    const viewportWidth = scrollPane?.clientWidth ?? centerPane?.clientWidth ?? 0;
+    if (!bundle || !centerPane || viewportWidth === 0) {
       return;
     }
 
     syncViewportMode();
-    layout = layoutEngine.build(bundle.pages, centerPane.clientWidth, zoom);
+    layout = layoutEngine.build(bundle.pages, viewportWidth, zoom);
     debugTimeline.log('layout-recalc', `${reason}: ${bundle.pages.length} pages at ${currentZoomLabel()}`);
     scheduleVisibleState(reason);
   }
@@ -1630,6 +2054,9 @@
 
   onMount(() => {
     syncViewportMode();
+    window.addEventListener('pointermove', handleWindowPointerMove, { passive: false });
+    window.addEventListener('pointerup', endRulerGesture);
+    window.addEventListener('pointercancel', endRulerGesture);
     strokePresetSettings = loadStrokePresetSettings();
     strokePresetSettingsLoaded = true;
     eraserStrokeMode = loadEraserStrokeMode();
@@ -1652,16 +2079,29 @@
 
   onDestroy(() => {
     resizeObserver?.disconnect();
+    window.removeEventListener('pointermove', handleWindowPointerMove);
+    window.removeEventListener('pointerup', endRulerGesture);
+    window.removeEventListener('pointercancel', endRulerGesture);
     cancelAnimationFrame(resizeFrame);
     cancelAnimationFrame(scrollFrame);
     cancelAnimationFrame(pinchFrame);
     window.clearTimeout(scrollEndTimer);
+    window.clearInterval(timeKeeperTimer);
     cancelLongPress();
     syncSocket?.close();
   });
 
   $: if (documentId && documentId !== pendingLoadDocumentId) {
     void loadDocument();
+  }
+
+  $: {
+    window.clearInterval(timeKeeperTimer);
+    if (timeKeeperVisible && timeKeeperRunning) {
+      timeKeeperTimer = window.setInterval(() => {
+        timeKeeperSeconds += 1;
+      }, 1000);
+    }
   }
 
   $: visibleLayouts =
@@ -1762,121 +2202,6 @@
       </div>
     </div>
 
-    {#if !compactMode}
-      <div class="reader-toolbar-row">
-        <div class="tool-cluster">
-          {#each toolOrder as tool}
-            <button
-              class:active={selectedTool === tool}
-              class="tool-pill"
-              type="button"
-              on:click={(event) => handleToolButtonClick(event, tool)}
-              on:contextmenu|preventDefault={(event) => {
-                const adjustableTool = adjustableStrokeTool(tool);
-                if (adjustableTool) {
-                  openStrokePopoverFromContextMenu(event, adjustableTool, selectedSize);
-                }
-              }}
-              on:pointercancel={cancelLongPress}
-              on:pointerdown={(event) => handleToolButtonPointerDown(event, tool)}
-              on:pointerleave={cancelLongPress}
-              on:pointerup={cancelLongPress}
-            >
-              {toolLabel(tool)}
-            </button>
-          {/each}
-        </div>
-
-        <div class="tool-cluster compact">
-          {#if selectedTool === 'shape'}
-            <div class="shape-options">
-              <button class:active={selectedShapeKind === 'rectangle'} class="shape-button" type="button" on:click={() => (selectedShapeKind = 'rectangle')}>▭</button>
-              <button class:active={selectedShapeKind === 'ellipse'} class="shape-button" type="button" on:click={() => (selectedShapeKind = 'ellipse')}>◯</button>
-              <button class:active={selectedShapeKind === 'triangle'} class="shape-button" type="button" on:click={() => (selectedShapeKind = 'triangle')}>△</button>
-              <button class:active={selectedShapeKind === 'diamond'} class="shape-button" type="button" on:click={() => (selectedShapeKind = 'diamond')}>◆</button>
-              <button class:active={selectedShapeFill} class="shape-button" type="button" on:click={() => (selectedShapeFill = !selectedShapeFill)}>Fill</button>
-              <button
-                class:active={selectedShapeLineStyle === 'solid'}
-                class="shape-button"
-                type="button"
-                on:click={() => (selectedShapeLineStyle = 'solid')}
-              >
-                Solid
-              </button>
-              <button
-                class:active={selectedShapeLineStyle === 'dashed'}
-                class="shape-button"
-                type="button"
-                on:click={() => (selectedShapeLineStyle = 'dashed')}
-              >
-                Dash
-              </button>
-              <button
-                class:active={selectedShapeLineStyle === 'dotted'}
-                class="shape-button"
-                type="button"
-                on:click={() => (selectedShapeLineStyle = 'dotted')}
-              >
-                Dot
-              </button>
-            </div>
-          {/if}
-
-          <div class="palette-group">
-            {#each colorChips as color}
-              <button
-                class:active={selectedColor === color}
-                class="color-chip"
-                type="button"
-                aria-label={`Choose ${color}`}
-                style={`background:${color}`}
-                on:click={() => (selectedColor = color)}
-              ></button>
-            {/each}
-          </div>
-
-          <div class="size-group">
-            {#each sizePresets as preset}
-              <button
-                class:active={selectedSize === preset.value}
-                class="size-button"
-                type="button"
-                aria-label={preset.label}
-                on:click={(event) => handleSizePresetSelect(event, preset.value)}
-                on:contextmenu|preventDefault={(event) => {
-                  const tool = currentAdjustableStrokeTool();
-                  if (tool) {
-                    openStrokePopoverFromContextMenu(event, tool, preset.value);
-                  }
-                }}
-                on:pointercancel={cancelLongPress}
-                on:pointerdown={(event) => handleSizePresetPointerDown(event, preset.value)}
-                on:pointerleave={cancelLongPress}
-                on:pointerup={cancelLongPress}
-              >
-                <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
-              </button>
-            {/each}
-          </div>
-
-          {#if selectedTool === 'pen' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
-            <button
-              class:active={strokePopover && strokePopover.tool === selectedTool}
-              class="size-button stroke-settings-trigger"
-              type="button"
-              aria-label={strokeSettingsButtonLabel(selectedTool)}
-              on:click={openCurrentStrokeSettings}
-            >
-              <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                <path d="M4 7h10M4 17h16M14 7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8 17a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
-              </svg>
-            </button>
-          {/if}
-        </div>
-
-        <div class="save-pill">{globalSaveLabel()}</div>
-      </div>
-    {/if}
   </header>
 
   {#if strokePopoverBackdropVisible && strokePopover}
@@ -1885,10 +2210,10 @@
 
   {#if strokePopover}
     <div
-      aria-label={`${strokeToolLabel(strokePopover.tool)} settings`}
+      aria-label={strokePopoverTitle(strokePopover.tool)}
       class="stroke-popover"
       role="dialog"
-      style={`left:${strokePopover.left}px; top:${strokePopover.top}px;`}
+      style={`left:${strokePopover.left}px; top:${strokePopover.top}px; --tool-accent:${currentToolAccent()};`}
     >
       <div class="stroke-popover-arrow" style={`left:${strokePopover.arrowLeft}px;`}></div>
       <div class="stroke-popover-header">
@@ -1897,7 +2222,7 @@
         </svg>
         <div class="stroke-popover-header-copy">
           <strong>{strokePopoverTitle(strokePopover.tool)}</strong>
-          <span>Preset {strokePopover.preset}</span>
+          <span>{quickPresetLabel()} preset · {strokePopover.preset}</span>
         </div>
       </div>
 
@@ -1920,6 +2245,94 @@
             Partial
           </button>
         </div>
+      {:else if strokePopover.tool === 'shape'}
+        <div class="stroke-popover-secondary-group">
+          <div class="stroke-popover-secondary-header">
+            <strong>Shape kind</strong>
+            <span>{selectedShapeKind}</span>
+          </div>
+          <div class="shape-options popover-shape-options">
+            <button class:active={selectedShapeKind === 'rectangle'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'rectangle')}>▭</button>
+            <button class:active={selectedShapeKind === 'ellipse'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'ellipse')}>◯</button>
+            <button class:active={selectedShapeKind === 'triangle'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'triangle')}>△</button>
+            <button class:active={selectedShapeKind === 'diamond'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'diamond')}>◆</button>
+          </div>
+        </div>
+
+        <div class="stroke-popover-mode-group" role="group" aria-label="Shape fill and border">
+          <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => (selectedShapeFill = !selectedShapeFill)}>
+            {selectedShapeFill ? 'Filled' : 'Outline'}
+          </button>
+          <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'solid')}>
+            Solid
+          </button>
+          <button class:active={selectedShapeLineStyle === 'dashed'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'dashed')}>
+            Dashed
+          </button>
+          <button class:active={selectedShapeLineStyle === 'dotted'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'dotted')}>
+            Dotted
+          </button>
+        </div>
+
+        <div class="stroke-popover-secondary-group">
+          <div class="stroke-popover-secondary-header">
+            <strong>Color</strong>
+            <span>{selectedColor}</span>
+          </div>
+          <div class="palette-group popover-palette-group">
+            {#each colorChips as color}
+              <button
+                class:active={selectedColor === color}
+                class="color-chip popover-chip"
+                type="button"
+                aria-label={`Choose ${color}`}
+                style={`background:${color}`}
+                on:click={() => (selectedColor = color)}
+              ></button>
+            {/each}
+          </div>
+        </div>
+      {:else if strokePopover.tool === 'text'}
+        <div class="stroke-popover-info-card">
+          <strong>Tap the page to place a note.</strong>
+          <p>Text notes use the current ink color and can be erased or moved like the other annotations.</p>
+        </div>
+        <div class="stroke-popover-secondary-group">
+          <div class="stroke-popover-secondary-header">
+            <strong>Text size</strong>
+            <span>{textFontSize}px</span>
+          </div>
+          <div class="text-size-group">
+            {#each textSizePresets as size}
+              <button class:active={textFontSize === size} class="shape-button popover-shape-button" type="button" on:click={() => (textFontSize = size)}>
+                {size}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="stroke-popover-secondary-group">
+          <div class="stroke-popover-secondary-header">
+            <strong>Color</strong>
+            <span>{selectedColor}</span>
+          </div>
+          <div class="palette-group popover-palette-group">
+            {#each colorChips as color}
+              <button
+                class:active={selectedColor === color}
+                class="color-chip popover-chip"
+                type="button"
+                aria-label={`Choose ${color}`}
+                style={`background:${color}`}
+                on:click={() => (selectedColor = color)}
+              ></button>
+            {/each}
+          </div>
+        </div>
+      {:else if strokePopover.tool === 'hand'}
+        <div class="stroke-popover-info-card">
+          <strong>Pan and zoom the reader.</strong>
+          <p>Use the utility strip below for undo, redo, zoom, and the stylus-only toggle.</p>
+        </div>
       {:else}
         <div class="stroke-popover-secondary-group">
           <div class="stroke-popover-secondary-header">
@@ -1938,25 +2351,29 @@
         </div>
       {/if}
 
-      <div class="stroke-popover-preview">
-        <span class="stroke-popover-value">{strokePopoverWidthLabel}</span>
-        <div class="stroke-popover-preview-rail">
-          <div class="stroke-popover-preview-line" style={strokePopoverSampleStyle}></div>
+      {#if adjustableStrokeTool(strokePopover.tool)}
+        <div class="stroke-popover-preview">
+          <span class="stroke-popover-value">{strokePopoverWidthLabel}</span>
+          <div class="stroke-popover-preview-rail">
+            <div class="stroke-popover-preview-line" style={strokePopoverSampleStyle}></div>
+          </div>
         </div>
-      </div>
 
-      <input
-        class="stroke-popover-slider"
-        max={STROKE_BOUNDS[strokePopover.tool].max}
-        min={STROKE_BOUNDS[strokePopover.tool].min}
-        step={STROKE_BOUNDS[strokePopover.tool].step}
-        type="range"
-        value={strokePopoverWidth}
-        on:input={(event) => updateStrokePopoverWidth((event.currentTarget as HTMLInputElement).value)}
-      />
+        <input
+          class="stroke-popover-slider"
+          max={currentStrokePopoverBounds()?.max ?? 100}
+          min={currentStrokePopoverBounds()?.min ?? 0}
+          step={currentStrokePopoverBounds()?.step ?? 1}
+          type="range"
+          value={strokePopoverWidth}
+          on:input={(event) => updateStrokePopoverWidth((event.currentTarget as HTMLInputElement).value)}
+        />
+      {/if}
 
       <div class="stroke-popover-actions">
-        <button class="button subtle full stroke-popover-reset" type="button" on:click={restoreStrokePopoverPreset}>Reset preset</button>
+        {#if adjustableStrokeTool(strokePopover.tool)}
+          <button class="button subtle full stroke-popover-reset" type="button" on:click={restoreStrokePopoverPreset}>Reset preset</button>
+        {/if}
         {#if strokePopover.tool === 'eraser'}
           <button
             class="button subtle full stroke-popover-danger"
@@ -1965,6 +2382,13 @@
             on:click={clearCurrentPageAnnotations}
           >
             Clear page annotations
+          </button>
+        {:else if strokePopover.tool === 'hand'}
+          <button class="button subtle full stroke-popover-reset" type="button" on:click={resetZoom}>Reset zoom</button>
+          <button class="button subtle full stroke-popover-reset" type="button" on:click={toggleCompactHeader}>{compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'}</button>
+        {:else if strokePopover.tool === 'shape'}
+          <button class="button subtle full stroke-popover-reset" type="button" on:click={() => (selectedShapeFill = !selectedShapeFill)}>
+            {selectedShapeFill ? 'Use outline' : 'Use fill'}
           </button>
         {:else}
           <button class="button subtle full stroke-popover-reset" type="button" on:click={restoreStrokeStabilization}>Reset stabilization</button>
@@ -2001,12 +2425,84 @@
                 scrollToPage(pageIndex);
               }}
             >
-              <div class:compact-frame={compactMode} class="thumbnail-frame" style={`aspect-ratio:${page.width} / ${page.height};`}>
-                {#if page.kind === 'pdf'}
-                  <img alt={`Page ${pageIndex + 1}`} loading="lazy" src={`/api/pages/${page.id}/preview?width=${thumbnailPreviewWidth()}`} />
-                {:else}
-                  <div class={`thumbnail-template ${page.template ?? page.kind}`}></div>
-                {/if}
+              <div class:compact-frame={compactMode} class="thumbnail-frame" style={compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
+                <div class="thumbnail-preview-stage">
+                  {#if page.kind === 'pdf'}
+                    <img class="thumbnail-preview-image" alt={`Page ${pageIndex + 1}`} loading="lazy" src={`/api/pages/${page.id}/preview?width=${thumbnailPreviewWidth()}`} />
+                  {:else}
+                    <div class={`thumbnail-template thumbnail-preview-template ${page.template ?? page.kind}`}></div>
+                  {/if}
+
+                  {#if thumbnailAnnotations(page.id).length > 0}
+                    <svg class="thumbnail-annotation-overlay" viewBox={`0 0 ${page.width} ${page.height}`} preserveAspectRatio="xMidYMid meet">
+                      {#each thumbnailAnnotations(page.id) as annotation (annotation.id)}
+                        {#if annotation.type === 'stroke'}
+                          <path
+                            d={strokePath(annotation.points, 1)}
+                            fill="none"
+                            stroke={annotation.color}
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-opacity={thumbnailStrokeOpacity(annotation)}
+                            stroke-width={Math.max(annotation.width, annotation.tool === 'highlighter' ? 1.5 : 1)}
+                          ></path>
+                        {:else if annotation.type === 'text'}
+                          <text fill={annotation.color} font-size={annotation.fontSize} x={annotation.x} y={annotation.y + annotation.fontSize}>
+                            {annotation.text}
+                          </text>
+                        {:else if annotation.type === 'sticky'}
+                          <g>
+                            <rect
+                              fill={annotation.noteColor}
+                              fill-opacity="0.92"
+                              height={annotation.height}
+                              rx="14"
+                              ry="14"
+                              stroke="rgba(42,42,42,0.18)"
+                              stroke-width="1"
+                              width={annotation.width}
+                              x={annotation.x}
+                              y={annotation.y}
+                            ></rect>
+                            <text fill={annotation.color} font-size={annotation.fontSize} x={annotation.x + 12} y={annotation.y + annotation.fontSize + 10}>
+                              {annotation.text}
+                            </text>
+                          </g>
+                        {:else if annotation.shape === 'ellipse'}
+                          <ellipse
+                            cx={annotation.x + annotation.width / 2}
+                            cy={annotation.y + annotation.height / 2}
+                            fill={annotation.fill ? annotation.color : 'transparent'}
+                            fill-opacity={annotation.fill ? 0.16 : 0}
+                            rx={annotation.width / 2}
+                            ry={annotation.height / 2}
+                            stroke={annotation.color}
+                            stroke-width={Math.max(annotation.strokeWidth, 1)}
+                          ></ellipse>
+                        {:else if annotation.shape === 'rectangle'}
+                          <rect
+                            fill={annotation.fill ? annotation.color : 'transparent'}
+                            fill-opacity={annotation.fill ? 0.16 : 0}
+                            height={annotation.height}
+                            stroke={annotation.color}
+                            stroke-width={Math.max(annotation.strokeWidth, 1)}
+                            width={annotation.width}
+                            x={annotation.x}
+                            y={annotation.y}
+                          ></rect>
+                        {:else}
+                          <path
+                            d={shapePath(annotation, 1)}
+                            fill={annotation.fill ? annotation.color : 'transparent'}
+                            fill-opacity={annotation.fill ? 0.16 : 0}
+                            stroke={annotation.color}
+                            stroke-width={Math.max(annotation.strokeWidth, 1)}
+                          ></path>
+                        {/if}
+                      {/each}
+                    </svg>
+                  {/if}
+                </div>
               </div>
               <div class="thumbnail-meta">
                 <strong>Page {pageIndex + 1}</strong>
@@ -2019,174 +2515,214 @@
     </aside>
 
     <section bind:this={centerPane} class="reader-center">
-      {#if compactMode && bundle}
-        <div class="reader-toolbar-floating">
-          <div class="reader-toolbar-row compact-toolbar compact-toolbar-strip">
-            <button class="tool-pill icon-only compact-tool-button compact-tool-button-undo" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>
-              <span class="compact-tool-icon compact-tool-icon-undo">↺</span>
-            </button>
-            <button class="tool-pill icon-only compact-tool-button compact-tool-button-redo" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>
-              <span class="compact-tool-icon compact-tool-icon-redo">↻</span>
-            </button>
-
-            {#each toolOrder as tool}
-              <button
-                class:active={selectedTool === tool}
-                class={`tool-pill icon-only compact-tool-button compact-tool-button-${tool}`}
-                type="button"
-                aria-label={toolLabel(tool)}
-                on:click={(event) => handleToolButtonClick(event, tool)}
-                on:contextmenu|preventDefault={(event) => {
-                  const adjustableTool = adjustableStrokeTool(tool);
-                  if (adjustableTool) {
-                    openStrokePopoverFromContextMenu(event, adjustableTool, selectedSize);
-                  }
-                }}
-                on:pointercancel={cancelLongPress}
-                on:pointerdown={(event) => handleToolButtonPointerDown(event, tool)}
-                on:pointerleave={cancelLongPress}
-                on:pointerup={cancelLongPress}
-              >
-                {#if tool === 'highlighter'}
-                  <span class={`compact-tool-icon compact-tool-icon-${tool}`}>
-                    <svg aria-hidden="true" class="compact-tool-svg compact-tool-svg-highlighter" viewBox="0 0 24 24">
-                      <path
-                        d="M7 15.5 15.9 6.6a2 2 0 0 1 2.8 0l1.7 1.7a2 2 0 0 1 0 2.8l-8.9 8.9H7z"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="1.7"
-                      />
-                      <path
-                        d="m14.7 7.8 3.5 3.5"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.7"
-                      />
-                      <path
-                        d="M5 19.5h8.5"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.7"
-                      />
-                    </svg>
-                  </span>
-                {:else}
-                  <span class={`compact-tool-icon compact-tool-icon-${tool}`}>{toolGlyph(tool)}</span>
-                {/if}
-              </button>
-            {/each}
-
-            {#if selectedTool === 'shape'}
-              <div class="shape-options compact-shape-options">
-                <button class:active={selectedShapeKind === 'rectangle'} class="shape-button compact-shape-button" type="button" aria-label="Rectangle" on:click={() => (selectedShapeKind = 'rectangle')}>▭</button>
-                <button class:active={selectedShapeKind === 'ellipse'} class="shape-button compact-shape-button" type="button" aria-label="Ellipse" on:click={() => (selectedShapeKind = 'ellipse')}>◯</button>
-                <button class:active={selectedShapeKind === 'triangle'} class="shape-button compact-shape-button" type="button" aria-label="Triangle" on:click={() => (selectedShapeKind = 'triangle')}>△</button>
-                <button class:active={selectedShapeKind === 'diamond'} class="shape-button compact-shape-button" type="button" aria-label="Diamond" on:click={() => (selectedShapeKind = 'diamond')}>◆</button>
-                <button class:active={selectedShapeFill} class="shape-button compact-shape-fill" type="button" aria-label="Toggle fill" on:click={() => (selectedShapeFill = !selectedShapeFill)}>
-                  <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                    <rect x="5.5" y="5.5" width="13" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8" />
-                    <path d="M7 17.5h10V11H7z" fill="currentColor" />
-                  </svg>
-                </button>
-                <button class:active={selectedShapeLineStyle === 'solid'} class="shape-button compact-line-style-button" type="button" aria-label="Solid border" on:click={() => (selectedShapeLineStyle = 'solid')}>
-                  <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                    <path d="M4.5 12h15" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.3" />
-                  </svg>
-                </button>
-                <button class:active={selectedShapeLineStyle === 'dashed'} class="shape-button compact-line-style-button" type="button" aria-label="Dashed border" on:click={() => (selectedShapeLineStyle = 'dashed')}>
-                  <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                    <path d="M4.5 12h5.5M14 12h5.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.3" />
-                  </svg>
-                </button>
-                <button class:active={selectedShapeLineStyle === 'dotted'} class="shape-button compact-line-style-button" type="button" aria-label="Dotted border" on:click={() => (selectedShapeLineStyle = 'dotted')}>
-                  <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                    <circle cx="6" cy="12" r="1.6" fill="currentColor" />
-                    <circle cx="12" cy="12" r="1.6" fill="currentColor" />
-                    <circle cx="18" cy="12" r="1.6" fill="currentColor" />
-                  </svg>
-                </button>
-              </div>
-            {/if}
-
-            <div class="palette-group compact-palette-group">
-              {#each compactPalette() as color}
-                <button
-                  class:active={selectedColor === color}
-                  class="color-chip compact-chip"
-                  type="button"
-                  aria-label={`Choose ${color}`}
-                  style={`background:${color}`}
-                  on:click={() => (selectedColor = color)}
-                ></button>
-              {/each}
-            </div>
-
-            {#if selectedTool === 'pen' || selectedTool === 'highlighter' || selectedTool === 'eraser' || selectedTool === 'shape'}
-              <div class="size-group compact-size-group">
-                {#each sizePresets as preset}
-                  <button
-                    class:active={selectedSize === preset.value}
-                    class="size-button"
-                    type="button"
-                    aria-label={preset.label}
-                    on:click={(event) => handleSizePresetSelect(event, preset.value)}
-                    on:contextmenu|preventDefault={(event) => {
-                      const tool = currentAdjustableStrokeTool();
-                      if (tool) {
-                        openStrokePopoverFromContextMenu(event, tool, preset.value);
-                      }
-                    }}
-                    on:pointercancel={cancelLongPress}
-                    on:pointerdown={(event) => handleSizePresetPointerDown(event, preset.value)}
-                    on:pointerleave={cancelLongPress}
-                    on:pointerup={cancelLongPress}
-                  >
-                    <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-
-            {#if selectedTool === 'pen' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
-              <button
-                class:active={strokePopover && strokePopover.tool === selectedTool}
-                class="tool-pill icon-only compact-tool-button stroke-settings-trigger"
-                type="button"
-                aria-label={strokeSettingsButtonLabel(selectedTool)}
-                on:click={openCurrentStrokeSettings}
-              >
-                <svg aria-hidden="true" class="compact-line-style-svg" viewBox="0 0 24 24">
-                  <path d="M4 7h10M4 17h16M14 7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM8 17a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
-                </svg>
-              </button>
-            {/if}
-
-            <button
-              class:active={compactHeaderVisibleState}
-              class="tool-pill icon-only compact-tool-button compact-tool-button-menu-toggle"
-              type="button"
-              aria-label={compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'}
-              on:click={toggleCompactHeader}
-            >
-              <span class="compact-tool-icon compact-tool-icon-menu-toggle">{compactHeaderVisibleState ? '▴' : '▾'}</span>
-            </button>
-            <button class="tool-pill icon-only" type="button" aria-label="Zoom out" on:click={() => changeZoom(-1)}>-</button>
-            <button class="zoom-pill compact-zoom-pill" type="button" aria-label="Reset zoom to 100%" on:click={resetZoom}>{zoomLabel}</button>
-            <button class="tool-pill icon-only" type="button" aria-label="Zoom in" on:click={() => changeZoom(1)}>+</button>
-            <div class="save-pill compact-save-pill">{compactSaveLabel()}</div>
-          </div>
-        </div>
-      {/if}
-
       {#if loading}
         <div class="reader-loading">Loading reader…</div>
       {:else if !bundle}
         <div class="reader-loading">Document unavailable.</div>
       {:else}
+        <div class="reader-middle-bar" style={`--tool-accent:${currentToolAccent()};`}>
+          <div class="middle-menu-strip" role="toolbar" aria-label="Drawing tools">
+            {#each middleMenuItems as item}
+              <button
+                class:active={selectedTool === item.id || activeToolPanel === item.id}
+                class="middle-menu-button"
+                type="button"
+                title={item.label}
+                aria-label={item.label}
+                style={`--tool-accent:${item.accent};`}
+                on:click={(event) => handleMiddleMenuItem(item.id, event.currentTarget as HTMLElement | null)}
+              >
+                <span class="middle-menu-glyph">{item.glyph}</span>
+              </button>
+            {/each}
+
+            <button
+              class:active={activeToolPanel === panelForTool(selectedTool)}
+              class="middle-menu-utility"
+              type="button"
+              aria-label="Tool options"
+              disabled={!canOpenCurrentToolPanel()}
+              on:click={toggleCurrentToolPanel}
+            >
+              ⋯
+            </button>
+            <div class="middle-menu-divider"></div>
+            <button class="middle-menu-utility" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>↺</button>
+            <button class="middle-menu-utility" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>↻</button>
+            <button class:active={compactHeaderVisibleState} class="middle-menu-utility" type="button" aria-label={compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'} on:click={toggleCompactHeader}>{compactHeaderVisibleState ? '▴' : '▾'}</button>
+            <button class="middle-menu-utility" type="button" aria-label="Zoom out" on:click={() => changeZoom(-1)}>-</button>
+            <button class="middle-menu-percent" type="button" aria-label="Reset zoom to 100%" on:click={resetZoom}>{zoomLabel}</button>
+            <button class="middle-menu-utility" type="button" aria-label="Zoom in" on:click={() => changeZoom(1)}>+</button>
+            <div class="middle-menu-save">{globalSaveLabel()}</div>
+          </div>
+
+          {#if activeToolPanel}
+            <section class="middle-menu-flyout" aria-label={`${activeToolPanel} options`} style={`--tool-accent:${currentToolAccent()};`}>
+              {#if activeToolPanel === 'lasso'}
+                <div class="tool-panel-header-copy">
+                  <strong>Lasso Tool</strong>
+                  <span>Select annotations with a rectangle or freehand pass.</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={lassoMode === 'rectangle'} class="stroke-mode-button" type="button" on:click={() => (lassoMode = 'rectangle')}>Rectangle</button>
+                  <button class:active={lassoMode === 'freehand'} class="stroke-mode-button" type="button" on:click={() => (lassoMode = 'freehand')}>Freehand</button>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Included in selection</strong>
+                    <span>Writing, text, and shapes</span>
+                  </div>
+                  <div class="panel-action-grid">
+                    <button class="button subtle" type="button">Handwriting</button>
+                    <button class="button subtle" type="button">Images</button>
+                    <button class="button subtle" type="button">Shapes</button>
+                    <button class="button subtle" type="button">Text Boxes</button>
+                  </div>
+                </div>
+                <div class="stroke-popover-info-card">
+                  <strong>{lassoSelectionCount} item{lassoSelectionCount === 1 ? '' : 's'} selected</strong>
+                  <p>Drag on the page with the lasso tool to select annotations.</p>
+                </div>
+                <div class="panel-action-grid">
+                  <button class="button subtle" type="button" disabled={lassoSelectionCount === 0} on:click={clearLassoSelection}>Clear selection</button>
+                  <button class="button subtle danger" type="button" disabled={lassoSelectionCount === 0} on:click={deleteLassoSelection}>Delete selected</button>
+                </div>
+              {:else if activeToolPanel === 'write'}
+                <div class="tool-panel-header-copy">
+                  <strong>{quickPresetLabel()}</strong>
+                  <span>Writing options</span>
+                </div>
+                <div class="size-group panel-size-group">
+                  {#each sizePresets as preset}
+                    <button class:active={selectedSize === preset.value} class="size-button" type="button" aria-label={preset.label} on:click={(event) => handleSizePresetSelect(event, preset.value)}>
+                      <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
+                    </button>
+                  {/each}
+                </div>
+                {#if selectedTool === 'eraser'}
+                  <div class="stroke-popover-mode-group panel-mode-group">
+                    <button class:active={eraserStrokeMode === 'whole'} class="stroke-mode-button" type="button" on:click={() => (eraserStrokeMode = 'whole')}>Erase whole strokes</button>
+                    <button class:active={eraserStrokeMode === 'partial'} class="stroke-mode-button" type="button" on:click={() => (eraserStrokeMode = 'partial')}>Erase touched parts</button>
+                  </div>
+                  <div class="stroke-popover-info-card">
+                    <strong>Transparent eraser</strong>
+                    <p>The eraser circle shows the exact area being affected while you drag.</p>
+                  </div>
+                  <button class="button subtle" type="button" on:click={openCurrentStrokeSettings}>More eraser options</button>
+                {:else}
+                  <div class="palette-group popover-palette-group">
+                    {#each colorChips as color}
+                      <button class:active={selectedColor === color} class="color-chip popover-chip" type="button" aria-label={`Choose ${color}`} style={`background:${color}`} on:click={() => (selectedColor = color)}></button>
+                    {/each}
+                  </div>
+                  <button class="button subtle" type="button" on:click={openCurrentStrokeSettings}>More writing options</button>
+                {/if}
+              {:else if activeToolPanel === 'text'}
+                <div class="tool-panel-header-copy">
+                  <strong>Text</strong>
+                  <span>Tap the page to place a note.</span>
+                </div>
+                <div class="text-size-group">
+                  {#each textSizePresets as size}
+                    <button class:active={textFontSize === size} class="shape-button popover-shape-button" type="button" on:click={() => (textFontSize = size)}>{size}px</button>
+                  {/each}
+                </div>
+                <div class="palette-group popover-palette-group">
+                  {#each colorChips as color}
+                    <button class:active={selectedColor === color} class="color-chip popover-chip" type="button" aria-label={`Choose ${color}`} style={`background:${color}`} on:click={() => (selectedColor = color)}></button>
+                  {/each}
+                </div>
+              {:else if activeToolPanel === 'shape'}
+                <div class="tool-panel-header-copy">
+                  <strong>Shapes</strong>
+                  <span>Create, move, resize, and style shapes.</span>
+                </div>
+                <div class="shape-options popover-shape-options">
+                  <button class:active={selectedShapeKind === 'rectangle'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'rectangle')}>▭</button>
+                  <button class:active={selectedShapeKind === 'ellipse'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'ellipse')}>◯</button>
+                  <button class:active={selectedShapeKind === 'triangle'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'triangle')}>△</button>
+                  <button class:active={selectedShapeKind === 'diamond'} class="shape-button popover-shape-button" type="button" on:click={() => (selectedShapeKind = 'diamond')}>◆</button>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => (selectedShapeFill = !selectedShapeFill)}>{selectedShapeFill ? 'Filled' : 'Outline'}</button>
+                  <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'solid')}>Solid</button>
+                  <button class:active={selectedShapeLineStyle === 'dashed'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'dashed')}>Dashed</button>
+                  <button class:active={selectedShapeLineStyle === 'dotted'} class="stroke-mode-button" type="button" on:click={() => (selectedShapeLineStyle = 'dotted')}>Dotted</button>
+                </div>
+              {:else if activeToolPanel === 'sticky'}
+                <div class="tool-panel-header-copy">
+                  <strong>Sticky Notes</strong>
+                  <span>Color-ready quick callouts.</span>
+                </div>
+                <div class="palette-group popover-palette-group">
+                  <button class:active={stickyNoteColor === '#f6a6a6'} class="color-chip popover-chip" type="button" aria-label="Pink sticky note" style="background:#f6a6a6" on:click={() => (stickyNoteColor = '#f6a6a6')}></button>
+                  <button class:active={stickyNoteColor === '#ffd587'} class="color-chip popover-chip" type="button" aria-label="Amber sticky note" style="background:#ffd587" on:click={() => (stickyNoteColor = '#ffd587')}></button>
+                  <button class:active={stickyNoteColor === '#f5ef83'} class="color-chip popover-chip" type="button" aria-label="Yellow sticky note" style="background:#f5ef83" on:click={() => (stickyNoteColor = '#f5ef83')}></button>
+                  <button class:active={stickyNoteColor === '#a8efb7'} class="color-chip popover-chip" type="button" aria-label="Green sticky note" style="background:#a8efb7" on:click={() => (stickyNoteColor = '#a8efb7')}></button>
+                  <button class:active={stickyNoteColor === '#b6d8ff'} class="color-chip popover-chip" type="button" aria-label="Blue sticky note" style="background:#b6d8ff" on:click={() => (stickyNoteColor = '#b6d8ff')}></button>
+                </div>
+                <div class="stroke-popover-info-card">
+                  <strong>Tap the page to drop a sticky note</strong>
+                  <p>The selected color is used for the new note.</p>
+                </div>
+              {:else if activeToolPanel === 'accessories'}
+                <div class="tool-panel-header-copy">
+                  <strong>Accessories</strong>
+                  <span>Reader helpers and document utilities.</span>
+                </div>
+                <div class="panel-action-grid">
+                  <button class="button subtle" type="button" disabled={busy} on:click={bookmarkCurrentPage}>Bookmark</button>
+                  <button class="button subtle" type="button" on:click={exportPdf}>Export PDF</button>
+                  <button class:active={rulerVisible} class="button subtle" type="button" on:click={toggleRuler}>{rulerVisible ? 'Hide Ruler' : 'Show Ruler'}</button>
+                  <button class:active={timeKeeperVisible} class="button subtle" type="button" on:click={toggleTimeKeeper}>{timeKeeperVisible ? 'Hide Timer' : 'Show Timer'}</button>
+                </div>
+              {:else if activeToolPanel === 'laser'}
+                <div class="tool-panel-header-copy">
+                  <strong>Laser Pointer</strong>
+                  <span>Transient teaching pointer modes.</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={laserPointerMode === 'dot'} class="stroke-mode-button" type="button" on:click={() => (laserPointerMode = 'dot')}>Dot</button>
+                  <button class:active={laserPointerMode === 'line'} class="stroke-mode-button" type="button" on:click={() => (laserPointerMode = 'line')}>Line</button>
+                </div>
+                <div class="stroke-popover-info-card">
+                  <strong>Drag across the page to point</strong>
+                  <p>The laser pointer is transient and is not saved to the document.</p>
+                </div>
+              {:else}
+                <div class="tool-panel-header-copy">
+                  <strong>Hand Tool</strong>
+                  <span>Scroll and pan the reader.</span>
+                </div>
+                <label class="utility-toggle">
+                  <input bind:checked={stylusOnly} type="checkbox" />
+                  <span>Stylus-only writing</span>
+                </label>
+              {/if}
+            </section>
+          {/if}
+        </div>
+
+        {#if timeKeeperVisible}
+          <div class="timekeeper-overlay">
+            <strong>{formatTimeKeeper()}</strong>
+            <div class="stroke-popover-mode-group panel-mode-group">
+              <button class:active={timeKeeperRunning} class="stroke-mode-button" type="button" on:click={() => setTimeKeeperRunning(!timeKeeperRunning)}>
+                {timeKeeperRunning ? 'Pause' : 'Start'}
+              </button>
+              <button class="stroke-mode-button" type="button" on:click={resetTimeKeeper}>Reset</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if rulerVisible}
+          <div class="ruler-overlay" style={`top:${rulerOffsetY}px; transform:translateX(-50%) rotate(${rulerAngle}deg);`}>
+            <button class="ruler-overlay-handle" type="button" aria-label="Move ruler" on:pointerdown={(event) => startRulerGesture(event, 'move')}></button>
+            <div class="ruler-overlay-scale"></div>
+            <button class="ruler-overlay-rotate" type="button" aria-label="Rotate ruler" on:pointerdown={(event) => startRulerGesture(event, 'rotate')}></button>
+          </div>
+        {/if}
+
         <div
           bind:this={scrollPane}
           class:ink-scroll-locked={inkScrollLocked}
@@ -2209,6 +2745,7 @@
                 isActive={pageLayout.pageIndex === activePageIndex}
                 layout={pageLayout}
                 penStrokeWidths={strokePresetSettings.pen}
+                pencilStrokeWidths={strokePresetSettings.pencil}
                 sizePreset={selectedSize}
                 stylusOnly={stylusOnly}
                 tool={selectedTool}
@@ -2217,12 +2754,19 @@
                 eraserStrokeWidths={strokePresetSettings.eraser}
                 eraserStrokeMode={eraserStrokeMode}
                 strokeStabilization={strokeStabilization}
+                pencilStrokeStabilization={QUICK_PENCIL_STABILIZATION}
+                textFontSize={textFontSize}
+                stickyNoteColor={stickyNoteColor}
+                lassoMode={lassoMode}
+                laserPointerMode={laserPointerMode}
+                selectedAnnotationIds={selectedAnnotationIdsByPage[pageLayout.page.id] ?? []}
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
                 shapeLineStyle={selectedShapeLineStyle}
                 onPenSessionChange={setInkScrollLock}
                 onAppend={appendAnnotations}
                 onReplace={replaceAnnotations}
+                onSelectionChange={handleSelectionChange}
                 viewportTop={scrollPane?.scrollTop ?? 0}
                 viewportHeight={scrollPane?.clientHeight ?? 0}
               />

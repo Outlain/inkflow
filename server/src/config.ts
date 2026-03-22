@@ -7,7 +7,7 @@ function integerFromEnv(value: string | undefined, fallback: number): number {
 
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  host: process.env.HOST ?? '127.0.0.1',
+  host: process.env.HOST ?? '0.0.0.0',
   port: integerFromEnv(process.env.PORT, 3000),
   dataDir: process.env.DATA_DIR ?? path.resolve(process.cwd(), 'data'),
   maxUploadBytes: integerFromEnv(process.env.MAX_UPLOAD_BYTES, 1024 * 1024 * 1024),

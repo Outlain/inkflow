@@ -1,9 +1,12 @@
 export type DocumentKind = 'notebook' | 'pdf';
 export type PageKind = 'blank' | 'ruled' | 'grid' | 'dot' | 'pdf';
 export type NotebookTemplate = Extract<PageKind, 'blank' | 'ruled' | 'grid' | 'dot'>;
-export type EditorTool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'shape' | 'hand';
+type KnownEditorTool = 'lasso' | 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'text' | 'shape' | 'sticky' | 'laser' | 'hand';
+export type EditorTool = KnownEditorTool | (string & {});
 export type ShapeKind = 'rectangle' | 'ellipse' | 'triangle' | 'diamond';
 export type LineStyle = 'solid' | 'dashed' | 'dotted';
+export type LassoMode = 'rectangle' | 'freehand';
+export type LaserPointerMode = 'dot' | 'line';
 export type SaveMode = 'append' | 'replace';
 
 export interface FolderRecord {
@@ -90,7 +93,7 @@ export interface PagePoint {
 export interface StrokeAnnotation {
   id: string;
   type: 'stroke';
-  tool: 'pen' | 'highlighter';
+  tool: 'pen' | 'pencil' | 'highlighter';
   color: string;
   width: number;
   points: PagePoint[];
@@ -101,6 +104,19 @@ export interface TextAnnotation {
   type: 'text';
   text: string;
   color: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+}
+
+export interface StickyNoteAnnotation {
+  id: string;
+  type: 'sticky';
+  text: string;
+  color: string;
+  noteColor: string;
   x: number;
   y: number;
   width: number;
@@ -123,6 +139,7 @@ export interface ShapeAnnotation {
 }
 
 export type Annotation = StrokeAnnotation | TextAnnotation | ShapeAnnotation;
+export type PageAnnotation = Annotation | StickyNoteAnnotation;
 
 export interface PageAnnotationsPayload {
   pageId: string;

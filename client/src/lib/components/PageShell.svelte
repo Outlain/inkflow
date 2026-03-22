@@ -7,15 +7,25 @@
     LineStyle,
     PagePoint,
     PageRecord,
+    PageAnnotation,
     ShapeAnnotation,
     ShapeKind,
+    StickyNoteAnnotation,
+    StrokeAnnotation,
     TextAnnotation
   } from '@shared/contracts';
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
   import { cancelCanvasRender, renderPdfPage, type PdfRenderSegment } from '../pdf';
   import type { PageShellLayout } from '../reader/layout';
-  import { createStroke, eraseAnnotations, shapePath, stabilizeStrokePoints, strokePath } from '../annotations';
+  import {
+    createStroke,
+    eraseAnnotations,
+    shapePath,
+    stabilizePencilStrokePoints,
+    stabilizeStrokePoints,
+    strokePath
+  } from '../annotations';
   import {
     DEFAULT_STROKE_PRESET_SETTINGS,
     resolvePresetValue,
@@ -25,7 +35,7 @@
 
   export let layout: PageShellLayout;
   export let file: FileRecord | null = null;
-  export let annotations: Annotation[] = [];
+  export let annotations: PageAnnotation[] = [];
   export let tool: EditorTool = 'hand';
   export let color = '#123f63';
   export let sizePreset = 2;
@@ -38,13 +48,21 @@
   export let viewportTop = 0;
   export let viewportHeight = 0;
   export let penStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pen] as StrokePresetValues;
+  export let pencilStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pencil] as StrokePresetValues;
   export let highlighterStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.highlighter] as StrokePresetValues;
   export let eraserStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.eraser] as StrokePresetValues;
   export let eraserStrokeMode: EraserStrokeMode = 'whole';
   export let strokeStabilization = 30;
+  export let pencilStrokeStabilization = 18;
+  export let textFontSize = 24;
+  export let stickyNoteColor = '#f5ef83';
+  export let lassoMode: 'rectangle' | 'freehand' = 'rectangle';
+  export let laserPointerMode: 'dot' | 'line' = 'dot';
+  export let selectedAnnotationIds: string[] = [];
   export let onPenSessionChange: (active: boolean) => void = () => undefined;
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
+  export let onSelectionChange: (pageId: string, annotationIds: string[]) => void = () => undefined;
 
   let canvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
@@ -57,7 +75,7 @@
   let previewLoadedPageId = layout.page.kind === 'pdf' ? '' : layout.page.id;
   let activePointerId: number | null = null;
   let activePoints: PagePoint[] = [];
-  let previewAnnotations: Annotation[] | null = null;
+  let previewAnnotations: PageAnnotation[] | null = null;
   let selectedShapeId = '';
   let selectedShape: ShapeAnnotation | null = null;
   let renderSuspended = false;
@@ -67,6 +85,17 @@
   let eraserIndicatorPoint: PagePoint | null = null;
   let eraserIndicatorVisible = false;
   let eraserIndicatorStyle = '';
+  let laserPointerVisible = false;
+  let laserPointerStyle = '';
+  let laserPointerPath = '';
+  let localSelectedAnnotationIds: string[] = [];
+  let moveGesture:
+    | null
+    | {
+        annotationIds: string[];
+        origin: PagePoint;
+        startAnnotations: PageAnnotation[];
+      } = null;
   let shapeGesture:
     | null
     | {
@@ -87,7 +116,15 @@
   }
 
   function currentStrokeWidth(): number {
-    return resolvePresetValue(tool === 'highlighter' ? highlighterStrokeWidths : penStrokeWidths, sizePreset);
+    if (tool === 'highlighter') {
+      return resolvePresetValue(highlighterStrokeWidths, sizePreset);
+    }
+
+    if (tool === 'pencil') {
+      return resolvePresetValue(pencilStrokeWidths, sizePreset);
+    }
+
+    return resolvePresetValue(penStrokeWidths, sizePreset);
   }
 
   function currentEraserRadius(): number {
@@ -95,11 +132,34 @@
   }
 
   function currentStrokePoints(): PagePoint[] {
-    if (tool !== 'pen' && tool !== 'highlighter') {
+    if (tool !== 'pen' && tool !== 'pencil' && tool !== 'highlighter') {
       return activePoints;
     }
 
+    if (tool === 'pencil') {
+      return stabilizePencilStrokePoints(activePoints, pencilStrokeStabilization);
+    }
+
     return stabilizeStrokePoints(activePoints, strokeStabilization);
+  }
+
+  function averagePressure(points: PagePoint[]): number {
+    if (points.length === 0) {
+      return 0.5;
+    }
+
+    const total = points.reduce((sum, point) => sum + point.pressure, 0);
+    return Math.max(0.15, Math.min(1, total / points.length));
+  }
+
+  function pencilStrokeLayers(annotation: StrokeAnnotation): Array<{ multiplier: number; opacity: number }> {
+    const pressure = averagePressure(annotation.points);
+    const baseOpacity = 0.18 + pressure * 0.22;
+    return [
+      { multiplier: 1.22, opacity: baseOpacity * 0.28 },
+      { multiplier: 1.05, opacity: baseOpacity * 0.6 },
+      { multiplier: 0.88, opacity: baseOpacity }
+    ];
   }
 
   function lineStyle(annotation: ShapeAnnotation): string {
@@ -168,6 +228,20 @@
   }
 
   function finishStroke(): void {
+    if (moveGesture) {
+      if (previewAnnotations) {
+        onReplace(layout.page.id, previewAnnotations);
+      }
+
+      activePointerId = null;
+      activePoints = [];
+      previewAnnotations = null;
+      moveGesture = null;
+      clearEraserIndicator();
+      setInkSession(false);
+      return;
+    }
+
     if (activePoints.length === 0) {
       activePointerId = null;
       previewAnnotations = null;
@@ -176,7 +250,7 @@
       return;
     }
 
-    if (tool === 'pen' || tool === 'highlighter') {
+    if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
       const strokePoints = currentStrokePoints();
       const stroke = createStroke({
         id: createClientId(),
@@ -190,7 +264,7 @@
 
     if (tool === 'eraser') {
       const nextAnnotations = eraseAnnotations(annotations, activePoints, currentEraserRadius(), { strokeMode: eraserStrokeMode });
-      onReplace(layout.page.id, nextAnnotations);
+      onReplace(layout.page.id, nextAnnotations as Annotation[]);
     }
 
     if (tool === 'shape' && shapeGesture) {
@@ -198,6 +272,16 @@
         onReplace(layout.page.id, previewAnnotations);
       }
       selectedShapeId = shapeGesture.shapeId;
+    }
+
+    if (tool === 'lasso') {
+      const nextSelection = selectAnnotationsFromPath(activePoints);
+      localSelectedAnnotationIds = nextSelection;
+      onSelectionChange(layout.page.id, nextSelection);
+    }
+
+    if (tool === 'laser') {
+      clearLaserPointer();
     }
 
     activePointerId = null;
@@ -212,8 +296,10 @@
     activePointerId = null;
     activePoints = [];
     previewAnnotations = null;
+    moveGesture = null;
     shapeGesture = null;
     clearEraserIndicator();
+    clearLaserPointer();
     setInkSession(false);
   }
 
@@ -252,6 +338,12 @@
   function clearEraserIndicator(): void {
     eraserIndicatorPoint = null;
     eraserIndicatorVisible = false;
+  }
+
+  function clearLaserPointer(): void {
+    laserPointerVisible = false;
+    laserPointerStyle = '';
+    laserPointerPath = '';
   }
 
   function handlePointerLeave(): void {
@@ -407,6 +499,24 @@
     setInkSession(true, event.pointerType);
     updateEraserIndicator(event);
 
+    if (tool === 'lasso') {
+      const point = pageCoordinates(event).at(-1);
+      if (!point) {
+        return;
+      }
+
+      const hitAnnotation = findAnnotationAtPoint(point);
+      if (hitAnnotation) {
+        const nextSelection = localSelectedAnnotationIds.includes(hitAnnotation.id) ? [...localSelectedAnnotationIds] : [hitAnnotation.id];
+        setSelectedAnnotationIds(nextSelection);
+        beginMoveGesture(event, nextSelection, point);
+        return;
+      }
+
+      beginStroke(event);
+      return;
+    }
+
     if (tool === 'shape') {
       const [point] = pageCoordinates(event);
       if (!point) {
@@ -445,6 +555,37 @@
       return;
     }
 
+    if (tool === 'sticky') {
+      const [point] = pageCoordinates(event);
+      if (!point) {
+        return;
+      }
+
+      const existingNote = findStickyNoteAtPoint(point);
+      if (existingNote) {
+        setSelectedAnnotationIds([existingNote.id]);
+        beginMoveGesture(event, [existingNote.id], point);
+        return;
+      }
+
+      const note: StickyNoteAnnotation = {
+        id: createClientId(),
+        type: 'sticky',
+        text: 'New note',
+        color: '#2a2a2a',
+        noteColor: stickyNoteColor,
+        x: Math.max(16, point.x - 98),
+        y: Math.max(16, point.y - 72),
+        width: 196,
+        height: 144,
+        fontSize: Math.max(16, textFontSize - 4)
+      };
+      setSelectedAnnotationIds([note.id]);
+      onReplace(layout.page.id, [...annotations, note] as Annotation[]);
+      clearPointerState();
+      return;
+    }
+
     beginStroke(event);
   }
 
@@ -457,6 +598,16 @@
 
     event.preventDefault();
     continueStroke(event);
+
+    if (moveGesture) {
+      const point = activePoints.at(-1);
+      if (!point) {
+        return;
+      }
+
+      previewAnnotations = moveAnnotations(moveGesture.annotationIds, moveGesture.startAnnotations, moveGesture.origin, point);
+      return;
+    }
 
     if (tool === 'shape' && shapeGesture) {
       const point = activePoints[activePoints.length - 1];
@@ -473,7 +624,12 @@
       return;
     }
 
-    if (tool === 'pen' || tool === 'highlighter') {
+    if (tool === 'laser') {
+      updateLaserPointer();
+      return;
+    }
+
+    if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
       const strokePoints = currentStrokePoints();
       previewAnnotations = [
         ...annotations,
@@ -496,7 +652,17 @@
     event.preventDefault();
     continueStroke(event);
 
-    if (tool === 'pen' || tool === 'highlighter') {
+    if (moveGesture) {
+      const point = activePoints.at(-1);
+      if (!point) {
+        return;
+      }
+
+      previewAnnotations = moveAnnotations(moveGesture.annotationIds, moveGesture.startAnnotations, moveGesture.origin, point);
+      return;
+    }
+
+    if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
       const strokePoints = currentStrokePoints();
       previewAnnotations = [
         ...annotations,
@@ -508,6 +674,10 @@
           points: strokePoints
         })
       ];
+    }
+
+    if (tool === 'laser') {
+      updateLaserPointer();
     }
   }
 
@@ -570,10 +740,397 @@
       y: 92,
       width: 220,
       height: 44,
-      fontSize: 24
+      fontSize: textFontSize
     };
 
     onReplace(layout.page.id, [...annotations, annotation]);
+  }
+
+  function editTextAnnotation(annotation: TextAnnotation | StickyNoteAnnotation): void {
+    const promptLabel = annotation.type === 'sticky' ? 'Sticky note text' : 'Edit text';
+    const nextText = window.prompt(promptLabel, annotation.text);
+    if (nextText === null) {
+      return;
+    }
+
+    const trimmed = nextText.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    onReplace(
+      layout.page.id,
+      annotations.map((entry) => {
+        if (entry.id !== annotation.id) {
+          return entry;
+        }
+
+        return {
+          ...entry,
+          text: trimmed
+        };
+      }) as Annotation[]
+    );
+  }
+
+  function handleDoubleClick(event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const point = mousePagePoint(event);
+    if (!point) {
+      return;
+    }
+
+    const hitAnnotation = findAnnotationAtPoint(point);
+    if (hitAnnotation && (hitAnnotation.type === 'sticky' || hitAnnotation.type === 'text')) {
+      editTextAnnotation(hitAnnotation);
+      return;
+    }
+
+    if (tool === 'text') {
+      addText();
+    }
+  }
+
+  function updateLaserPointer(): void {
+    const latestPoint = activePoints[activePoints.length - 1];
+    const originPoint = activePoints[0];
+    if (!latestPoint) {
+      clearLaserPointer();
+      return;
+    }
+
+    laserPointerVisible = true;
+
+    if (laserPointerMode === 'line' && originPoint) {
+      laserPointerPath = `M ${originPoint.x * layout.scale} ${originPoint.y * layout.scale} L ${latestPoint.x * layout.scale} ${latestPoint.y * layout.scale}`;
+      laserPointerStyle = '';
+      return;
+    }
+
+    laserPointerPath = '';
+    laserPointerStyle = `width:${18}px; height:${18}px; left:${latestPoint.x * layout.scale - 9}px; top:${latestPoint.y * layout.scale - 9}px;`;
+  }
+
+  function setSelectedAnnotationIds(nextIds: string[]): void {
+    localSelectedAnnotationIds = nextIds;
+    onSelectionChange(layout.page.id, nextIds);
+  }
+
+  function distanceSquared(a: PagePoint, b: PagePoint): number {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  }
+
+  function pointDistanceSquaredToSegment(point: PagePoint, start: PagePoint, end: PagePoint): number {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+
+    if (dx === 0 && dy === 0) {
+      return distanceSquared(point, start);
+    }
+
+    const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy);
+    const clampedT = Math.max(0, Math.min(1, t));
+    const projection = {
+      x: start.x + clampedT * dx,
+      y: start.y + clampedT * dy,
+      pressure: 0,
+      time: 0
+    };
+
+    return distanceSquared(point, projection);
+  }
+
+  function annotationBounds(annotation: PageAnnotation): { left: number; top: number; right: number; bottom: number } {
+    if (annotation.type === 'stroke') {
+      const xs = annotation.points.map((point) => point.x);
+      const ys = annotation.points.map((point) => point.y);
+      const padding = Math.max(6, annotation.width);
+      return {
+        left: Math.min(...xs) - padding,
+        top: Math.min(...ys) - padding,
+        right: Math.max(...xs) + padding,
+        bottom: Math.max(...ys) + padding
+      };
+    }
+
+    return {
+      left: annotation.x,
+      top: annotation.y,
+      right: annotation.x + annotation.width,
+      bottom: annotation.y + annotation.height
+    };
+  }
+
+  function cloneAnnotation(annotation: PageAnnotation): PageAnnotation {
+    if (annotation.type === 'stroke') {
+      return {
+        ...annotation,
+        points: annotation.points.map((point) => ({ ...point }))
+      };
+    }
+
+    return { ...annotation };
+  }
+
+  function pointInEllipse(point: PagePoint, annotation: ShapeAnnotation): boolean {
+    const radiusX = Math.max(1, annotation.width / 2);
+    const radiusY = Math.max(1, annotation.height / 2);
+    const centerX = annotation.x + radiusX;
+    const centerY = annotation.y + radiusY;
+    const normalizedX = (point.x - centerX) / radiusX;
+    const normalizedY = (point.y - centerY) / radiusY;
+    return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
+  }
+
+  function annotationHitTest(annotation: PageAnnotation, point: PagePoint): boolean {
+    if (annotation.type === 'stroke') {
+      const threshold = Math.max(8 / Math.max(layout.scale, 0.001), annotation.width * 1.25 + 2);
+      const thresholdSquared = threshold * threshold;
+
+      if (annotation.points.length === 1) {
+        return distanceSquared(annotation.points[0], point) <= thresholdSquared;
+      }
+
+      for (let index = 0; index < annotation.points.length - 1; index += 1) {
+        if (pointDistanceSquaredToSegment(point, annotation.points[index], annotation.points[index + 1]) <= thresholdSquared) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    if (annotation.type === 'text' || annotation.type === 'sticky') {
+      return point.x >= annotation.x && point.x <= annotation.x + annotation.width && point.y >= annotation.y && point.y <= annotation.y + annotation.height;
+    }
+
+    if (annotation.shape === 'ellipse') {
+      return pointInEllipse(point, annotation);
+    }
+
+    return point.x >= annotation.x && point.x <= annotation.x + annotation.width && point.y >= annotation.y && point.y <= annotation.y + annotation.height;
+  }
+
+  function findAnnotationAtPoint(point: PagePoint): PageAnnotation | null {
+    for (let index = annotations.length - 1; index >= 0; index -= 1) {
+      const annotation = annotations[index];
+      if (annotationHitTest(annotation, point)) {
+        return annotation;
+      }
+    }
+
+    return null;
+  }
+
+  function findStickyNoteAtPoint(point: PagePoint): StickyNoteAnnotation | null {
+    for (let index = annotations.length - 1; index >= 0; index -= 1) {
+      const annotation = annotations[index];
+      if (annotation.type === 'sticky' && annotationHitTest(annotation, point)) {
+        return annotation;
+      }
+    }
+
+    return null;
+  }
+
+  function mousePagePoint(event: MouseEvent): PagePoint | null {
+    if (!interactionLayer) {
+      return null;
+    }
+
+    const rect = interactionLayer.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) / layout.scale,
+      y: (event.clientY - rect.top) / layout.scale,
+      pressure: 0.5,
+      time: event.timeStamp
+    };
+  }
+
+  function polygonContainsPoint(point: PagePoint, polygon: PagePoint[]): boolean {
+    if (polygon.length < 3 || typeof document === 'undefined') {
+      return false;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return false;
+    }
+
+    context.beginPath();
+    context.moveTo(polygon[0].x, polygon[0].y);
+    for (let index = 1; index < polygon.length; index += 1) {
+      context.lineTo(polygon[index].x, polygon[index].y);
+    }
+    context.closePath();
+    return context.isPointInPath(point.x, point.y);
+  }
+
+  function pointInPolygon(point: PagePoint, polygon: PagePoint[]): boolean {
+    if (polygon.length < 3) {
+      return false;
+    }
+
+    return polygonContainsPoint(point, polygon);
+  }
+
+  function annotationFullyInsidePolygon(annotation: PageAnnotation, polygon: PagePoint[]): boolean {
+    const polygonBounds = polygon.reduce(
+      (bounds, point) => ({
+        left: Math.min(bounds.left, point.x),
+        right: Math.max(bounds.right, point.x),
+        top: Math.min(bounds.top, point.y),
+        bottom: Math.max(bounds.bottom, point.y)
+      }),
+      {
+        left: Number.POSITIVE_INFINITY,
+        right: Number.NEGATIVE_INFINITY,
+        top: Number.POSITIVE_INFINITY,
+        bottom: Number.NEGATIVE_INFINITY
+      }
+    );
+
+    if (annotation.type === 'stroke') {
+      if (annotation.points.length === 0) {
+        return false;
+      }
+
+      const step = Math.max(1, Math.floor(annotation.points.length / 24));
+      for (let index = 0; index < annotation.points.length; index += step) {
+        const point = annotation.points[index];
+        if (
+          point.x < polygonBounds.left ||
+          point.x > polygonBounds.right ||
+          point.y < polygonBounds.top ||
+          point.y > polygonBounds.bottom ||
+          !pointInPolygon(point, polygon)
+        ) {
+          return false;
+        }
+      }
+
+      const lastPoint = annotation.points[annotation.points.length - 1];
+      return (
+        lastPoint.x >= polygonBounds.left &&
+        lastPoint.x <= polygonBounds.right &&
+        lastPoint.y >= polygonBounds.top &&
+        lastPoint.y <= polygonBounds.bottom &&
+        pointInPolygon(lastPoint, polygon)
+      );
+    }
+
+    const bounds = annotationBounds(annotation);
+    const corners: PagePoint[] = [
+      { x: bounds.left, y: bounds.top, pressure: 0, time: 0 },
+      { x: bounds.right, y: bounds.top, pressure: 0, time: 0 },
+      { x: bounds.right, y: bounds.bottom, pressure: 0, time: 0 },
+      { x: bounds.left, y: bounds.bottom, pressure: 0, time: 0 },
+      { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2, pressure: 0, time: 0 }
+    ];
+
+    return corners.every(
+      (corner) =>
+        corner.x >= polygonBounds.left &&
+        corner.x <= polygonBounds.right &&
+        corner.y >= polygonBounds.top &&
+        corner.y <= polygonBounds.bottom &&
+        pointInPolygon(corner, polygon)
+    );
+  }
+
+  function moveAnnotation(annotation: PageAnnotation, dx: number, dy: number): PageAnnotation {
+    if (annotation.type === 'stroke') {
+      return {
+        ...annotation,
+        points: annotation.points.map((point) => ({
+          ...point,
+          x: point.x + dx,
+          y: point.y + dy
+        }))
+      };
+    }
+
+    return {
+      ...annotation,
+      x: annotation.x + dx,
+      y: annotation.y + dy
+    };
+  }
+
+  function moveAnnotations(annotationIds: string[], startAnnotations: PageAnnotation[], origin: PagePoint, point: PagePoint): PageAnnotation[] {
+    const selectionBounds = startAnnotations.reduce(
+      (bounds, annotation) => {
+        const nextBounds = annotationBounds(annotation);
+        return {
+          left: Math.min(bounds.left, nextBounds.left),
+          top: Math.min(bounds.top, nextBounds.top)
+        };
+      },
+      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY }
+    );
+    const dx = Math.max(point.x - origin.x, -selectionBounds.left);
+    const dy = Math.max(point.y - origin.y, -selectionBounds.top);
+    const selectedIds = new Set(annotationIds);
+    const moved = new Map(startAnnotations.map((annotation) => [annotation.id, moveAnnotation(annotation, dx, dy)]));
+
+    return annotations.map((annotation) => (selectedIds.has(annotation.id) ? moved.get(annotation.id) ?? annotation : annotation));
+  }
+
+  function beginMoveGesture(event: PointerEvent, annotationIds: string[], origin: PagePoint): void {
+    activePointerId = event.pointerId;
+    activePoints = [origin];
+    moveGesture = {
+      annotationIds: [...annotationIds],
+      origin,
+      startAnnotations: annotations.filter((annotation) => annotationIds.includes(annotation.id)).map(cloneAnnotation)
+    };
+    previewAnnotations = moveAnnotations(annotationIds, moveGesture.startAnnotations, origin, origin);
+  }
+
+  function selectAnnotationsFromPath(points: PagePoint[]): string[] {
+    if (points.length === 0) {
+      return [];
+    }
+
+    const last = points[points.length - 1];
+    const first = points[0];
+    const left = Math.min(first.x, last.x);
+    const right = Math.max(first.x, last.x);
+    const top = Math.min(first.y, last.y);
+    const bottom = Math.max(first.y, last.y);
+    const polygon = lassoMode === 'freehand' && points.length > 2 ? closePolygon(points) : null;
+
+    return annotations
+      .filter((annotation) => {
+        if (polygon) {
+          return annotationFullyInsidePolygon(annotation, polygon);
+        }
+
+        const bounds = annotationBounds(annotation);
+        return !(bounds.right < left || bounds.left > right || bounds.bottom < top || bounds.top > bottom);
+      })
+      .map((annotation) => annotation.id);
+  }
+
+  function closePolygon(points: PagePoint[]): PagePoint[] {
+    if (points.length < 2) {
+      return points;
+    }
+
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (first.x === last.x && first.y === last.y) {
+      return points;
+    }
+
+    return [...points, { ...first }];
   }
 
   function createShapeFromPoints(start: PagePoint, end: PagePoint, id: string): ShapeAnnotation {
@@ -628,7 +1185,7 @@
     return null;
   }
 
-  function updateShapePreview(point: PagePoint): Annotation[] {
+  function updateShapePreview(point: PagePoint): PageAnnotation[] {
     if (!shapeGesture) {
       return annotations;
     }
@@ -738,6 +1295,15 @@
     setInkSession(false);
   }
 
+  $: if (tool !== 'laser' && laserPointerVisible) {
+    clearLaserPointer();
+  }
+
+  $: if (tool !== 'lasso' && localSelectedAnnotationIds.length > 0) {
+    localSelectedAnnotationIds = [];
+    onSelectionChange(layout.page.id, []);
+  }
+
   $: if (tool !== 'eraser' && eraserIndicatorVisible) {
     clearEraserIndicator();
   }
@@ -751,6 +1317,7 @@
     eraserIndicatorPoint && eraserIndicatorVisible
       ? `width:${currentEraserRadius() * 2 * layout.scale}px; height:${currentEraserRadius() * 2 * layout.scale}px; left:${eraserIndicatorPoint.x * layout.scale - currentEraserRadius() * layout.scale}px; top:${eraserIndicatorPoint.y * layout.scale - currentEraserRadius() * layout.scale}px;`
       : '';
+  $: localSelectedAnnotationIds = selectedAnnotationIds;
 </script>
 
 <article
@@ -781,15 +1348,29 @@
     <svg class="annotation-svg" viewBox={`0 0 ${layout.width} ${layout.height}`}>
       {#each displayAnnotations as annotation (annotation.id)}
         {#if annotation.type === 'stroke'}
-          <path
-            d={strokePath(annotation.points, layout.scale)}
-            fill="none"
-            stroke={annotation.color}
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-opacity={annotation.tool === 'highlighter' ? 0.33 : 1}
-            stroke-width={scaledWidth(annotation.width)}
-          ></path>
+          {#if annotation.tool === 'pencil'}
+            {#each pencilStrokeLayers(annotation) as layer}
+              <path
+                d={strokePath(annotation.points, layout.scale)}
+                fill="none"
+                stroke={annotation.color}
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-opacity={layer.opacity}
+                stroke-width={scaledWidth(annotation.width * layer.multiplier)}
+              ></path>
+            {/each}
+          {:else}
+            <path
+              d={strokePath(annotation.points, layout.scale)}
+              fill="none"
+              stroke={annotation.color}
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-opacity={annotation.tool === 'highlighter' ? 0.33 : 1}
+              stroke-width={scaledWidth(annotation.width)}
+            ></path>
+          {/if}
         {:else if annotation.type === 'text'}
           <text
             fill={annotation.color}
@@ -799,6 +1380,29 @@
           >
             {annotation.text}
           </text>
+        {:else if annotation.type === 'sticky'}
+          <g>
+            <rect
+              fill={annotation.noteColor}
+              fill-opacity="0.92"
+              height={annotation.height * layout.scale}
+              rx="14"
+              ry="14"
+              stroke="rgba(42,42,42,0.22)"
+              stroke-width="1.2"
+              width={annotation.width * layout.scale}
+              x={annotation.x * layout.scale}
+              y={annotation.y * layout.scale}
+            ></rect>
+            <text
+              fill={annotation.color}
+              font-size={annotation.fontSize * layout.scale}
+              x={(annotation.x + 14) * layout.scale}
+              y={(annotation.y + annotation.fontSize + 12) * layout.scale}
+            >
+              {annotation.text}
+            </text>
+          </g>
         {:else if annotation.shape === 'ellipse'}
           <ellipse
             cx={(annotation.x + annotation.width / 2) * layout.scale}
@@ -834,6 +1438,45 @@
           ></path>
         {/if}
       {/each}
+
+      {#each displayAnnotations.filter((annotation) => localSelectedAnnotationIds.includes(annotation.id)) as annotation (annotation.id)}
+        {#key `${annotation.id}:selection`}
+          {@const bounds = annotationBounds(annotation)}
+          <rect
+            fill="none"
+            height={(bounds.bottom - bounds.top) * layout.scale}
+            rx="12"
+            ry="12"
+            stroke="#7b4bb3"
+            stroke-dasharray="10 8"
+            stroke-width="2.4"
+            width={(bounds.right - bounds.left) * layout.scale}
+            x={bounds.left * layout.scale}
+            y={bounds.top * layout.scale}
+          ></rect>
+        {/key}
+      {/each}
+
+      {#if tool === 'lasso' && activePoints.length > 1}
+        {#if lassoMode === 'freehand'}
+          <path d={strokePath(activePoints, layout.scale)} fill="none" stroke="#9a63d6" stroke-dasharray="8 6" stroke-width="2.2"></path>
+        {:else}
+          <rect
+            fill="rgba(154,99,214,0.08)"
+            height={Math.abs(activePoints[activePoints.length - 1].y - activePoints[0].y) * layout.scale}
+            stroke="#9a63d6"
+            stroke-dasharray="8 6"
+            stroke-width="2.2"
+            width={Math.abs(activePoints[activePoints.length - 1].x - activePoints[0].x) * layout.scale}
+            x={Math.min(activePoints[0].x, activePoints[activePoints.length - 1].x) * layout.scale}
+            y={Math.min(activePoints[0].y, activePoints[activePoints.length - 1].y) * layout.scale}
+          ></rect>
+        {/if}
+      {/if}
+
+      {#if tool === 'laser' && laserPointerVisible && laserPointerMode === 'line' && laserPointerPath}
+        <path d={laserPointerPath} fill="none" stroke="#ff5b5b" stroke-linecap="round" stroke-opacity="0.9" stroke-width="5"></path>
+      {/if}
     </svg>
 
     <div
@@ -843,7 +1486,7 @@
       class="annotation-layer"
       role="presentation"
       on:contextmenu|preventDefault
-      on:dblclick={tool === 'text' ? addText : undefined}
+      on:dblclick={handleDoubleClick}
       on:pointercancel={handlePointerCancel}
       on:pointerdown={handlePointerDown}
       on:pointerleave={handlePointerLeave}
@@ -854,6 +1497,10 @@
 
     {#if tool === 'eraser' && eraserIndicatorPoint && eraserIndicatorVisible}
       <div class="eraser-indicator" style={eraserIndicatorStyle}></div>
+    {/if}
+
+    {#if tool === 'laser' && laserPointerVisible && laserPointerMode === 'dot'}
+      <div class="eraser-indicator laser-pointer-dot" style={laserPointerStyle}></div>
     {/if}
 
     {#if tool === 'shape' && selectedShape}

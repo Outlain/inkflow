@@ -1,10 +1,11 @@
-export type AdjustableStrokeTool = 'pen' | 'highlighter' | 'eraser';
+export type AdjustableStrokeTool = 'pen' | 'pencil' | 'highlighter' | 'eraser';
 export type EraserStrokeMode = 'whole' | 'partial';
 
 export type StrokePresetValues = [number, number, number];
 
 export interface StrokePresetSettings {
   pen: StrokePresetValues;
+  pencil: StrokePresetValues;
   highlighter: StrokePresetValues;
   eraser: StrokePresetValues;
 }
@@ -22,12 +23,14 @@ const DEFAULT_STROKE_STABILIZATION = 30;
 
 export const DEFAULT_STROKE_PRESET_SETTINGS: StrokePresetSettings = {
   pen: [2, 4, 7],
+  pencil: [1.4, 2.4, 4.2],
   highlighter: [10, 18, 26],
   eraser: [10, 18, 28]
 };
 
 export const STROKE_BOUNDS: Record<AdjustableStrokeTool, StrokeBounds> = {
   pen: { min: 1, max: 12, step: 0.1 },
+  pencil: { min: 0.8, max: 8, step: 0.1 },
   highlighter: { min: 6, max: 32, step: 0.5 },
   eraser: { min: 6, max: 42, step: 1 }
 };
@@ -35,6 +38,7 @@ export const STROKE_BOUNDS: Record<AdjustableStrokeTool, StrokeBounds> = {
 export function cloneStrokePresetSettings(source = DEFAULT_STROKE_PRESET_SETTINGS): StrokePresetSettings {
   return {
     pen: [...source.pen] as StrokePresetValues,
+    pencil: [...source.pencil] as StrokePresetValues,
     highlighter: [...source.highlighter] as StrokePresetValues,
     eraser: [...source.eraser] as StrokePresetValues
   };
@@ -67,6 +71,7 @@ export function loadStrokePresetSettings(): StrokePresetSettings {
     const parsed = JSON.parse(raw) as Partial<Record<AdjustableStrokeTool, unknown>>;
     return {
       pen: normalizeToolValues('pen', parsed.pen),
+      pencil: normalizeToolValues('pencil', parsed.pencil),
       highlighter: normalizeToolValues('highlighter', parsed.highlighter),
       eraser: normalizeToolValues('eraser', parsed.eraser)
     };
