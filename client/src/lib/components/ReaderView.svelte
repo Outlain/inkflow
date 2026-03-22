@@ -249,6 +249,7 @@
   let canRedoAvailable = false;
   let currentPageAnnotationCount = 0;
   let draftsAvailable = true;
+  let thumbnailSidebarPages: DocumentBundle['pages'] = [];
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
   $: strokePopoverWidth = strokePopover && adjustableStrokeTool(strokePopover.tool) ? currentStrokePresetValue(adjustableStrokeTool(strokePopover.tool)!, strokePopover.preset) : 0;
@@ -270,6 +271,7 @@
   $: canRedoAvailable = historyRedoCount > 0;
   $: currentPageAnnotationCount = currentPageRecord ? pageStates[currentPageRecord.id]?.annotations?.length ?? 0 : 0;
   $: lassoSelectionCount = currentPageRecord ? selectedAnnotationIdsByPage[currentPageRecord.id]?.length ?? 0 : 0;
+  $: thumbnailSidebarPages = bundle?.pages.slice(Math.max(0, activePageIndex - 4), Math.min(bundle.pages.length, activePageIndex + 5)) ?? [];
 
   function defaultPageState(): PageRuntimeState {
     return {
@@ -1166,6 +1168,30 @@
     }
 
     return 1;
+  }
+
+  function thumbnailKindLabel(page: DocumentBundle['pages'][number]): string {
+    if (page.kind === 'pdf') {
+      return 'PDF';
+    }
+
+    if (page.kind === 'blank') {
+      return 'Blank';
+    }
+
+    if (page.kind === 'ruled') {
+      return 'Ruled';
+    }
+
+    if (page.kind === 'grid') {
+      return 'Grid';
+    }
+
+    if (page.kind === 'dot') {
+      return 'Dot';
+    }
+
+    return page.template ?? page.kind;
   }
 
   function toggleCompactPages(): void {
@@ -2120,6 +2146,12 @@
     });
   }
 
+  $: if (thumbnailSidebarPages.length > 0) {
+    thumbnailSidebarPages.forEach((page) => {
+      void loadPageState(page.id);
+    });
+  }
+
   $: if (strokePresetSettingsLoaded) {
     saveStrokePresetSettings(strokePresetSettings);
   }
@@ -2426,7 +2458,7 @@
               }}
             >
               <div class:compact-frame={compactMode} class="thumbnail-frame" style={compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
-                <div class="thumbnail-preview-stage">
+                <div class="thumbnail-preview-stage" style={!compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
                   {#if page.kind === 'pdf'}
                     <img class="thumbnail-preview-image" alt={`Page ${pageIndex + 1}`} loading="lazy" src={`/api/pages/${page.id}/preview?width=${thumbnailPreviewWidth()}`} />
                   {:else}
@@ -2505,8 +2537,7 @@
                 </div>
               </div>
               <div class="thumbnail-meta">
-                <strong>Page {pageIndex + 1}</strong>
-                <span>{page.kind === 'pdf' ? 'PDF page' : `${page.template ?? 'blank'} paper`}</span>
+                <strong>Page {pageIndex + 1} <span>{thumbnailKindLabel(page)}</span></strong>
               </div>
             </button>
           {/each}

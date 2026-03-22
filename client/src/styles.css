@@ -980,7 +980,7 @@ img {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr) 320px;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
   gap: 18px;
 }
 
@@ -1002,12 +1002,17 @@ img {
 .thumbnail-list {
   display: grid;
   gap: 14px;
+  width: 100%;
+  min-width: 0;
   max-height: calc(100vh - 330px);
   overflow: auto;
+  box-sizing: border-box;
 }
 
 .thumbnail-card {
   padding: 12px;
+  width: 100%;
+  min-width: 0;
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.74);
   border: 2px solid transparent;
@@ -1016,6 +1021,7 @@ img {
   gap: 10px;
   content-visibility: auto;
   contain-intrinsic-size: 240px;
+  box-sizing: border-box;
 }
 
 .thumbnail-meta {
@@ -1025,6 +1031,9 @@ img {
 
 .thumbnail-meta strong {
   color: #20435d;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .thumbnail-meta span {
@@ -1033,10 +1042,13 @@ img {
 }
 
 .thumbnail-frame {
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(222, 229, 237, 0.9), rgba(248, 251, 255, 0.92));
   border: 1px solid rgba(72, 90, 102, 0.12);
+  box-sizing: border-box;
 }
 
 .thumbnail-preview-stage {
@@ -1082,8 +1094,12 @@ img {
 
 .reader-screen:not(.compact-mode) .reader-body {
   max-width: 1480px;
-  grid-template-columns: 200px minmax(0, 1fr) 320px;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
   gap: 18px;
+}
+
+.reader-screen:not(.compact-mode) .thumbnail-rail {
+  padding: 16px;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-list {
@@ -1097,35 +1113,48 @@ img {
   background: rgba(255, 255, 255, 0.62);
 }
 
+.reader-screen:not(.compact-mode) .thumbnail-card.active {
+  padding: 5px;
+}
+
 .reader-screen:not(.compact-mode) .thumbnail-frame {
   height: 176px;
   display: grid;
   place-items: center;
   border-radius: 14px;
-  padding: 14px;
+  padding: 1px;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-preview-stage {
-  width: 56%;
-  height: 86%;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  justify-self: stretch;
+  align-self: stretch;
+  box-sizing: border-box;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-preview-image {
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
   object-fit: contain;
   object-position: center center;
-  justify-self: center;
-  align-self: center;
+  justify-self: stretch;
+  align-self: stretch;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-preview-template {
   width: 100%;
   height: 100%;
-  justify-self: center;
-  align-self: center;
+  justify-self: stretch;
+  align-self: stretch;
+  border-radius: 10px;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-annotation-overlay {
