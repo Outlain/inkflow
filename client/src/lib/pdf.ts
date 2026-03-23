@@ -8,8 +8,10 @@ const documentTasks = new Map<string, Promise<PDFDocumentProxy>>();
 const canvasTasks = new WeakMap<HTMLCanvasElement, RenderTask>();
 const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasElement; pixels: number }>();
 
-const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 36_000_000;
-const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 18_000_000;
+// ~100M pixels ≈ 400 MB — keeps ~34 full A4 pages at 2× DPR rendered in cache
+const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
+// ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile
+const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
 const PDF_RANGE_CHUNK_SIZE_BYTES = 1024 * 1024;
 
 export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
@@ -62,11 +64,12 @@ export function resolvePdfDeviceScale(options: {
   const safeRatio = Math.max(devicePixelRatio || 1, 1);
 
   if (!coarsePointer && viewportWidth > 1080) {
-    return Math.min(safeRatio, 2);
+    // Allow full native DPR on desktop for crisp rendering
+    return safeRatio;
   }
 
-  const compactCap = pageScale >= 1.15 ? 1.5 : 1.35;
-  return Math.min(safeRatio, compactCap);
+  // Allow up to 2× on touch devices for crisp rendering
+  return Math.min(safeRatio, 2);
 }
 
 function currentEnvironment(): { devicePixelRatio: number; coarsePointer: boolean; viewportWidth: number } {

@@ -379,7 +379,10 @@
   }
 
   function targetRenderSegments(): PdfRenderSegment[] {
-    return isActive ? fullRenderSegments() : visibleRenderSegments();
+    // Only render the segments actually in the viewport, even for the active page.
+    // The active page gets ALL segments eventually via eager follow-up below, but
+    // the initial render only covers what's visible so isReady fires faster.
+    return visibleRenderSegments();
   }
 
   function segmentKey(scaleKey: string, segment: PdfRenderSegment): string {
@@ -481,6 +484,25 @@
       if (token === renderToken) {
         recomputeRenderReadiness(nextScaleKey);
         debugTimeline.log('render-end', `Rendered page ${layout.pageIndex + 1}`);
+
+        // Eagerly render remaining off-screen segments, ordered by proximity
+        // to the visible area so the next-to-scroll-into segment finishes first.
+        const segmentOrder: PdfRenderSegment[] = ['top', 'middle', 'bottom'];
+        const visibleSegs = visibleRenderSegments();
+        const hasTop = visibleSegs.includes('top');
+        const hasBottom = visibleSegs.includes('bottom');
+        // If bottom is visible but top isn't, reverse so middle renders before top
+        if (hasBottom && !hasTop) segmentOrder.reverse();
+        const remaining = segmentOrder.filter((segment) => !hasSegment(nextScaleKey, segment));
+        for (const segment of remaining) {
+          if (token !== renderToken || !canvas || !file) break;
+          try {
+            await renderPdfPage({ canvas, page: layout.page, file, scale: layout.scale, segment });
+            if (token !== renderToken) break;
+            renderedSegments = new Set(renderedSegments).add(segmentKey(nextScaleKey, segment));
+            recomputeRenderReadiness(nextScaleKey);
+          } catch { break; }
+        }
       }
     } catch (error) {
       if (token === renderToken && error instanceof Error && error.name !== 'RenderingCancelledException') {

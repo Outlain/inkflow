@@ -1644,7 +1644,8 @@
       return;
     }
 
-    const nextVisible = layoutEngine.getVisibleWindow(layout, scrollPane.scrollTop, scrollPane.clientHeight, scrolling ? 0 : 1);
+    // Keep 2 extra pages mounted outside viewport when idle, 1 during scroll
+    const nextVisible = layoutEngine.getVisibleWindow(layout, scrollPane.scrollTop, scrollPane.clientHeight, scrolling ? 1 : 2);
     if (nextVisible.start !== visibleWindow.start || nextVisible.end !== visibleWindow.end) {
       visibleWindow = nextVisible;
       debugTimeline.log('visible-range', `${reason}: ${nextVisible.start + 1}-${nextVisible.end + 1}`);
@@ -1818,7 +1819,8 @@
     lastScrollY = scrollPane.scrollTop;
     lastScrollTime = Date.now();
 
-    if (velocity > 0.5 && !scrolling) {
+    // 2.0 px/ms ≈ 2000 px/sec — only fast flicking suspends renders
+    if (velocity > 2.0 && !scrolling) {
       scrolling = true;
       debugTimeline.log('scroll-start', 'Reader scroll started');
     }
@@ -2184,7 +2186,7 @@
 
   async function prefetchAdjacentPages(centerIndex: number): Promise<void> {
     const pages = bundle?.pages ?? [];
-    const targets = [centerIndex - 2, centerIndex - 1, centerIndex + 1, centerIndex + 2]
+    const targets = [centerIndex - 1, centerIndex + 1, centerIndex - 2, centerIndex + 2, centerIndex - 3, centerIndex + 3, centerIndex - 4, centerIndex + 4]
       .filter((i) => i >= 0 && i < pages.length && i !== centerIndex);
     for (const i of targets) {
       const page = pages[i];
