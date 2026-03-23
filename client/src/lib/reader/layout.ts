@@ -21,15 +21,27 @@ export interface VisibleWindow {
   end: number;
 }
 
-const TOP_PADDING = 24;
-const BOTTOM_PADDING = 48;
-const PAGE_GAP = 28;
-const HORIZONTAL_PADDING = 20;
+// Compact = phones (< 720px viewport)
+function resolveLayoutPadding(viewportWidth: number): {
+  topPadding: number;
+  bottomPadding: number;
+  pageGap: number;
+  horizontalPadding: number;
+} {
+  if (viewportWidth <= 720) {
+    return { topPadding: 4, bottomPadding: 8, pageGap: 6, horizontalPadding: 0 };
+  }
+  if (viewportWidth <= 1080) {
+    return { topPadding: 16, bottomPadding: 32, pageGap: 20, horizontalPadding: 10 };
+  }
+  return { topPadding: 24, bottomPadding: 48, pageGap: 28, horizontalPadding: 20 };
+}
 
 export class ReaderLayoutEngine {
   build(pages: PageRecord[], viewportWidth: number, zoom: number): ReaderLayoutResult {
-    const usableWidth = Math.max(320, viewportWidth - HORIZONTAL_PADDING * 2);
-    let top = TOP_PADDING;
+    const pad = resolveLayoutPadding(viewportWidth);
+    const usableWidth = Math.max(320, viewportWidth - pad.horizontalPadding * 2);
+    let top = pad.topPadding;
     let maxRight = viewportWidth;
 
     const layouts = pages.map((page, pageIndex) => {
@@ -47,12 +59,12 @@ export class ReaderLayoutEngine {
         height,
         scale
       };
-      top += height + PAGE_GAP;
+      top += height + pad.pageGap;
       return layout;
     });
 
     return {
-      containerHeight: top - PAGE_GAP + BOTTOM_PADDING,
+      containerHeight: top - pad.pageGap + pad.bottomPadding,
       containerWidth: Math.ceil(maxRight),
       pages: layouts
     };

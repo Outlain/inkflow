@@ -82,7 +82,7 @@
   let selectedShapeId = '';
   let selectedShape: ShapeAnnotation | null = null;
   let renderSuspended = false;
-  let staleScale = 0;
+  let pendingScaleChange = false;
   let inkSessionActive = false;
   let previewWidth = 0;
   let renderIntentKey = '';
@@ -398,7 +398,7 @@
     isReady = targetSegments.every((segment) => hasSegment(scaleKey, segment));
     fullQualityReady = fullRenderSegments().every((segment) => hasSegment(scaleKey, segment));
     if (isReady) {
-      staleScale = 0;
+      pendingScaleChange = false;
     }
   }
 
@@ -436,15 +436,14 @@
 
     const nextScaleKey = Number(layout.scale.toFixed(4)).toFixed(4);
     if (renderedScaleKey !== nextScaleKey) {
-      // Don't clear the canvas — keep old render visible via CSS transform
-      if (renderedScaleKey && canvas && canvas.width > 0) {
-        staleScale = parseFloat(renderedScaleKey);
-      }
       renderedScaleKey = nextScaleKey;
       renderedSegments = new Set<string>();
-      isReady = false;
+      // Keep isReady true until the first new segment actually starts rendering.
+      // This keeps the old canvas visible (at old resolution) instead of flashing
+      // to the JPEG preview. The canvas will be cleared by ensureCanvasSize when
+      // the first segment render begins.
+      pendingScaleChange = true;
       fullQualityReady = false;
-      // Do NOT clear canvas.width/height — old content stays visible
     }
 
     const segments = targetRenderSegments();
@@ -1372,12 +1371,7 @@
         on:load={previewDidLoad}
         src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
       />
-      <canvas
-        bind:this={canvas}
-        class:ready={isReady || staleScale !== 0}
-        class="reader-pdf-canvas"
-        style={staleScale !== 0 && !isReady ? `transform: scale(${layout.scale / staleScale}); transform-origin: top left;` : ''}
-      ></canvas>
+      <canvas bind:this={canvas} class:ready={isReady} class="reader-pdf-canvas"></canvas>
     {:else}
       <div class={`reader-template-layer ${templateClass(layout.page)}`}></div>
     {/if}

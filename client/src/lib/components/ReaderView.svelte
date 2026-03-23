@@ -112,7 +112,7 @@
 
   const dispatch = createEventDispatcher<{ close: void }>();
   const layoutEngine = new ReaderLayoutEngine();
-  const zoomLevels = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
+  const zoomLevels = [0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3];
   const ZOOM_EPSILON = 0.001;
   const MAX_PAGE_HISTORY = 50;
   const toolOrder: EditorTool[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'hand'];
@@ -1325,7 +1325,7 @@
       return;
     }
 
-    pinchFrame = requestAnimationFrame(async () => {
+    pinchFrame = requestAnimationFrame(() => {
       pinchFrame = 0;
       const update = pendingZoomUpdate;
       pendingZoomUpdate = null;
@@ -1337,14 +1337,10 @@
       if (Math.abs(update.zoom - zoom) > ZOOM_EPSILON) {
         zoom = update.zoom;
         recalcLayout(update.reason);
+        // Apply anchor synchronously after layout recalc to avoid
+        // the 1-frame jump on mobile where content shifts then snaps.
+        applyZoomAnchor(update.anchor);
       }
-
-      await tick();
-      if (update.token !== zoomUpdateToken) {
-        return;
-      }
-
-      applyZoomAnchor(update.anchor);
     });
   }
 

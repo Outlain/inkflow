@@ -1296,6 +1296,13 @@ img {
   max-width: 100%;
   margin: 0 auto;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.middle-menu-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .middle-menu-button,
@@ -2068,7 +2075,20 @@ img {
   .document-card,
   .reader-header,
   .reader-center {
-    border-radius: 22px;
+    border-radius: 12px;
+  }
+
+  .screen-shell,
+  .reader-screen {
+    padding: 0;
+  }
+
+  .reader-center {
+    padding: 0;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
   }
 
   .title {
@@ -2098,17 +2118,44 @@ img {
   }
 
   .reader-toolbar-floating {
-    top: 12px;
-    left: 10px;
-    right: 10px;
+    top: 6px;
+    left: 4px;
+    right: 4px;
   }
 
   .reader-screen.compact-mode.compact-header-open .reader-toolbar-floating {
-    top: 96px;
+    top: 90px;
+  }
+
+  .reader-middle-bar {
+    left: 0;
+    right: 0;
+    transform: none;
+    width: auto;
+    max-width: 100%;
+    padding: 0 4px;
+    top: 4px;
+  }
+
+  .middle-menu-strip {
+    width: auto;
+    min-height: 42px;
+    padding: 4px 6px;
+    gap: 4px;
+    border-radius: 22px;
+  }
+
+  .middle-menu-button,
+  .middle-menu-utility,
+  .middle-menu-percent,
+  .middle-menu-save {
+    min-width: 30px;
+    height: 30px;
+    padding: 0 7px;
   }
 
   .page-indicator {
-    left: 12px;
-    bottom: 12px;
+    left: 6px;
+    bottom: 6px;
   }
 }
