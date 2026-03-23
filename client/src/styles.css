@@ -1060,12 +1060,14 @@ img {
 }
 
 .thumbnail-frame img,
+.thumbnail-preview-canvas,
 .thumbnail-template {
   width: 100%;
   height: 100%;
 }
 
-.thumbnail-frame img {
+.thumbnail-frame img,
+.thumbnail-preview-canvas {
   object-fit: contain;
   object-position: center top;
   background: #fffdfa;
@@ -1145,6 +1147,14 @@ img {
   max-height: none;
   object-fit: contain;
   object-position: center center;
+  justify-self: stretch;
+  align-self: stretch;
+}
+
+.reader-screen:not(.compact-mode) .thumbnail-preview-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
   justify-self: stretch;
   align-self: stretch;
 }

@@ -11,6 +11,7 @@ import type {
   BookmarkPayload,
   CreateFolderInput,
   CreateNotebookInput,
+  PageAnnotation,
   InsertBlankPageRequest,
   SavePageRequest
 } from '../../../shared/src/contracts.js';
@@ -40,6 +41,7 @@ import {
 } from '../services/libraryService.js';
 import { importPdfFromTemp, preparePdfInsertionFromTemp } from '../services/pdfImportService.js';
 import { ensurePdfPreviewImage } from '../services/pdfTools.js';
+import { renderAnnotatedThumbnailSvg } from '../services/thumbnailService.js';
 
 const folderSchema = z.object({
   title: z.string().trim().min(1).max(80),
@@ -479,6 +481,38 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       return reply.type('image/jpeg').header('cache-control', 'public, max-age=31536000, immutable').send(fs.createReadStream(previewPath));
     } catch (error) {
       return reply.status(404).send({ error: error instanceof Error ? error.message : 'Preview not available.' });
+    }
+  });
+
+  app.get('/pages/:pageId/thumbnail', async (request, reply) => {
+    try {
+      const { pageId } = request.params as { pageId: string };
+      const width = Number((request.query as { width?: string }).width ?? 240);
+      const documentId = getPageDocumentId(pageId);
+      const bundle = getDocumentBundle(documentId);
+      const page = bundle.pages.find((entry) => entry.id === pageId);
+
+      if (!page) {
+        return reply.status(404).send({ error: 'Page not found.' });
+      }
+
+      const annotations = getPageAnnotations(pageId).annotations as PageAnnotation[];
+      const pdfSource = page.kind === 'pdf' ? getPagePdfSource(pageId) : null;
+      const svg = await renderAnnotatedThumbnailSvg({
+        page,
+        annotations,
+        previewWidth: width,
+        pdfSource: pdfSource
+          ? {
+              storageKey: pdfSource.storageKey,
+              sourcePageIndex: pdfSource.sourcePageIndex
+            }
+          : null
+      });
+
+      return reply.type('image/svg+xml').header('cache-control', 'no-store').send(svg);
+    } catch (error) {
+      return reply.status(404).send({ error: error instanceof Error ? error.message : 'Thumbnail not available.' });
     }
   });
 

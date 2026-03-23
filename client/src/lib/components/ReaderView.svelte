@@ -24,12 +24,13 @@
     searchDocument,
     updateBookmark
   } from '../api';
-  import { annotationTextFromAnnotations, shapePath, strokePath } from '../annotations';
+  import { annotationTextFromAnnotations } from '../annotations';
   import { debugTimeline } from '../debug';
   import { shouldUseDraft } from '../draftConflict';
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
   import { createClientId } from '../id';
   import PageShell from './PageShell.svelte';
+  import ThumbnailPreview from './ThumbnailPreview.svelte';
   import { ReaderLayoutEngine, type PageShellLayout, type ReaderLayoutResult, type VisibleWindow } from '../reader/layout';
   import {
     DEFAULT_STROKE_PRESET_SETTINGS,
@@ -250,6 +251,8 @@
   let currentPageAnnotationCount = 0;
   let draftsAvailable = true;
   let thumbnailSidebarPages: DocumentBundle['pages'] = [];
+  let previewAnnotationsByPage: Record<string, PageAnnotation[] | null> = {};
+  let thumbnailRenderVersionByPage: Record<string, number> = {};
 
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
   $: strokePopoverWidth = strokePopover && adjustableStrokeTool(strokePopover.tool) ? currentStrokePresetValue(adjustableStrokeTool(strokePopover.tool)!, strokePopover.preset) : 0;
@@ -1151,23 +1154,39 @@
   }
 
   function thumbnailAnnotations(pageId: string): PageAnnotation[] {
-    return (pageStates[pageId]?.annotations ?? []) as PageAnnotation[];
+    return (previewAnnotationsByPage[pageId] ?? pageStates[pageId]?.annotations ?? []) as PageAnnotation[];
   }
 
-  function thumbnailStrokeOpacity(annotation: PageAnnotation): number {
-    if (annotation.type !== 'stroke') {
-      return 1;
-    }
+  function useClientThumbnail(pageId: string): boolean {
+    const state = pageStates[pageId];
+    return Boolean(previewAnnotationsByPage[pageId] || state?.dirty || state?.loaded);
+  }
 
-    if (annotation.tool === 'highlighter') {
-      return 0.3;
-    }
+  function thumbnailServerSrc(pageId: string): string {
+    const state = pageStates[pageId];
+    const version = `${state?.annotationRevision ?? 0}-${state?.updatedAt ?? 'base'}`;
+    return `/api/pages/${pageId}/thumbnail?width=${thumbnailPreviewWidth()}&v=${encodeURIComponent(version)}`;
+  }
 
-    if (annotation.tool === 'pencil') {
-      return 0.72;
-    }
+  function thumbnailBaseSrc(pageId: string): string {
+    return `/api/pages/${pageId}/preview?width=${thumbnailPreviewWidth()}`;
+  }
 
-    return 1;
+  function handlePreviewAnnotationsChange(pageId: string, annotations: PageAnnotation[] | null): void {
+    previewAnnotationsByPage = {
+      ...previewAnnotationsByPage,
+      [pageId]: annotations
+    };
+    thumbnailRenderVersionByPage = {
+      ...thumbnailRenderVersionByPage,
+      [pageId]: (thumbnailRenderVersionByPage[pageId] ?? 0) + 1
+    };
+  }
+
+  function thumbnailRenderKey(pageId: string): string {
+    const state = pageStates[pageId];
+    const previewVersion = thumbnailRenderVersionByPage[pageId] ?? 0;
+    return `${pageId}:${state?.localChangeCounter ?? 0}:${state?.annotationRevision ?? 0}:${previewVersion}`;
   }
 
   function thumbnailKindLabel(page: DocumentBundle['pages'][number]): string {
@@ -2458,83 +2477,20 @@
               }}
             >
               <div class:compact-frame={compactMode} class="thumbnail-frame" style={compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
-                <div class="thumbnail-preview-stage" style={!compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
-                  {#if page.kind === 'pdf'}
-                    <img class="thumbnail-preview-image" alt={`Page ${pageIndex + 1}`} loading="lazy" src={`/api/pages/${page.id}/preview?width=${thumbnailPreviewWidth()}`} />
-                  {:else}
-                    <div class={`thumbnail-template thumbnail-preview-template ${page.template ?? page.kind}`}></div>
-                  {/if}
-
-                  {#if thumbnailAnnotations(page.id).length > 0}
-                    <svg class="thumbnail-annotation-overlay" viewBox={`0 0 ${page.width} ${page.height}`} preserveAspectRatio="xMidYMid meet">
-                      {#each thumbnailAnnotations(page.id) as annotation (annotation.id)}
-                        {#if annotation.type === 'stroke'}
-                          <path
-                            d={strokePath(annotation.points, 1)}
-                            fill="none"
-                            stroke={annotation.color}
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-opacity={thumbnailStrokeOpacity(annotation)}
-                            stroke-width={Math.max(annotation.width, annotation.tool === 'highlighter' ? 1.5 : 1)}
-                          ></path>
-                        {:else if annotation.type === 'text'}
-                          <text fill={annotation.color} font-size={annotation.fontSize} x={annotation.x} y={annotation.y + annotation.fontSize}>
-                            {annotation.text}
-                          </text>
-                        {:else if annotation.type === 'sticky'}
-                          <g>
-                            <rect
-                              fill={annotation.noteColor}
-                              fill-opacity="0.92"
-                              height={annotation.height}
-                              rx="14"
-                              ry="14"
-                              stroke="rgba(42,42,42,0.18)"
-                              stroke-width="1"
-                              width={annotation.width}
-                              x={annotation.x}
-                              y={annotation.y}
-                            ></rect>
-                            <text fill={annotation.color} font-size={annotation.fontSize} x={annotation.x + 12} y={annotation.y + annotation.fontSize + 10}>
-                              {annotation.text}
-                            </text>
-                          </g>
-                        {:else if annotation.shape === 'ellipse'}
-                          <ellipse
-                            cx={annotation.x + annotation.width / 2}
-                            cy={annotation.y + annotation.height / 2}
-                            fill={annotation.fill ? annotation.color : 'transparent'}
-                            fill-opacity={annotation.fill ? 0.16 : 0}
-                            rx={annotation.width / 2}
-                            ry={annotation.height / 2}
-                            stroke={annotation.color}
-                            stroke-width={Math.max(annotation.strokeWidth, 1)}
-                          ></ellipse>
-                        {:else if annotation.shape === 'rectangle'}
-                          <rect
-                            fill={annotation.fill ? annotation.color : 'transparent'}
-                            fill-opacity={annotation.fill ? 0.16 : 0}
-                            height={annotation.height}
-                            stroke={annotation.color}
-                            stroke-width={Math.max(annotation.strokeWidth, 1)}
-                            width={annotation.width}
-                            x={annotation.x}
-                            y={annotation.y}
-                          ></rect>
-                        {:else}
-                          <path
-                            d={shapePath(annotation, 1)}
-                            fill={annotation.fill ? annotation.color : 'transparent'}
-                            fill-opacity={annotation.fill ? 0.16 : 0}
-                            stroke={annotation.color}
-                            stroke-width={Math.max(annotation.strokeWidth, 1)}
-                          ></path>
-                        {/if}
-                      {/each}
-                    </svg>
-                  {/if}
-                </div>
+                <!-- {#key} only on annotationRevision so remount happens on confirmed save,
+                     not on every pointer-move. Live drawing updates flow through prop changes. -->
+                {#key `${page.id}:${pageStates[page.id]?.annotationRevision ?? 0}`}
+                  <div class="thumbnail-preview-stage" style={!compactMode ? `aspect-ratio:${page.width} / ${page.height};` : undefined}>
+                    <ThumbnailPreview
+                      alt={`Page ${pageIndex + 1}`}
+                      annotations={previewAnnotationsByPage[page.id] ?? pageStates[page.id]?.annotations ?? []}
+                      page={page}
+                      previewSrc={thumbnailBaseSrc(page.id)}
+                      serverSrc={thumbnailServerSrc(page.id)}
+                      useClient={!!(previewAnnotationsByPage[page.id] || pageStates[page.id]?.dirty || pageStates[page.id]?.loaded)}
+                    />
+                  </div>
+                {/key}
               </div>
               <div class="thumbnail-meta">
                 <strong>Page {pageIndex + 1} <span>{thumbnailKindLabel(page)}</span></strong>
@@ -2798,6 +2754,7 @@
                 onAppend={appendAnnotations}
                 onReplace={replaceAnnotations}
                 onSelectionChange={handleSelectionChange}
+                onPreviewAnnotationsChange={handlePreviewAnnotationsChange}
                 viewportTop={scrollPane?.scrollTop ?? 0}
                 viewportHeight={scrollPane?.clientHeight ?? 0}
               />

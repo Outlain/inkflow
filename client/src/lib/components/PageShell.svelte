@@ -63,6 +63,7 @@
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onSelectionChange: (pageId: string, annotationIds: string[]) => void = () => undefined;
+  export let onPreviewAnnotationsChange: (pageId: string, annotations: PageAnnotation[] | null) => void = () => undefined;
 
   let canvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
@@ -1256,6 +1257,7 @@
   });
 
   $: displayAnnotations = previewAnnotations ?? annotations;
+  $: onPreviewAnnotationsChange(layout.page.id, previewAnnotations);
   $: selectedShape =
     displayAnnotations.find(
       (annotation): annotation is ShapeAnnotation => annotation.type === 'shape' && annotation.id === selectedShapeId
