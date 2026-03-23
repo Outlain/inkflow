@@ -6,19 +6,24 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const documentTasks = new Map<string, Promise<PDFDocumentProxy>>();
 const canvasTasks = new WeakMap<HTMLCanvasElement, RenderTask>();
-const renderSurfaceCache = new Map<string, { surface: HTMLCanvasElement; pixels: number }>();
+const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasElement; pixels: number }>();
 
 const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 36_000_000;
 const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 18_000_000;
 const PDF_RANGE_CHUNK_SIZE_BYTES = 1024 * 1024;
 
-export type PdfRenderSegment = 'full' | 'top' | 'bottom';
+export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
 
 function documentKey(file: FileRecord): string {
   return `${file.id}:${file.url}`;
 }
 
 export function clearPdfCaches(): void {
+  for (const entry of renderSurfaceCache.values()) {
+    if (entry.surface instanceof ImageBitmap) {
+      entry.surface.close();
+    }
+  }
   documentTasks.clear();
   renderSurfaceCache.clear();
 }
@@ -96,7 +101,7 @@ function renderSegmentKey(
   return `${renderSurfaceKey(file, page, targetWidth, targetHeight)}:${segment}:${segmentTop}:${segmentHeight}`;
 }
 
-function touchCacheEntry(cacheKey: string): HTMLCanvasElement | null {
+function touchCacheEntry(cacheKey: string): ImageBitmap | HTMLCanvasElement | null {
   const cached = renderSurfaceCache.get(cacheKey);
   if (!cached) {
     return null;
@@ -111,7 +116,7 @@ function cachePixelBudget(coarsePointer: boolean): number {
   return coarsePointer ? TOUCH_RENDER_CACHE_PIXEL_BUDGET : DESKTOP_RENDER_CACHE_PIXEL_BUDGET;
 }
 
-function storeRenderSurface(cacheKey: string, surface: HTMLCanvasElement, coarsePointer: boolean): void {
+function storeRenderSurface(cacheKey: string, surface: ImageBitmap | HTMLCanvasElement, coarsePointer: boolean): void {
   const pixels = surface.width * surface.height;
   renderSurfaceCache.delete(cacheKey);
   renderSurfaceCache.set(cacheKey, { surface, pixels });
@@ -130,8 +135,15 @@ function storeRenderSurface(cacheKey: string, surface: HTMLCanvasElement, coarse
 
     const removed = renderSurfaceCache.get(oldestKey);
     renderSurfaceCache.delete(oldestKey);
+    if (removed?.surface instanceof ImageBitmap) {
+      removed.surface.close();
+    }
     totalPixels -= removed?.pixels ?? 0;
   }
+}
+
+function offscreenCanvasSupported(): boolean {
+  return typeof OffscreenCanvas !== 'undefined';
 }
 
 function copySurfaceToCanvas(params: {
@@ -173,24 +185,17 @@ function ensureCanvasSize(params: {
 
 function segmentBounds(targetHeight: number, segment: PdfRenderSegment): { top: number; height: number } {
   if (segment === 'full') {
-    return {
-      top: 0,
-      height: targetHeight
-    };
+    return { top: 0, height: targetHeight };
   }
-
-  const split = Math.max(1, Math.floor(targetHeight / 2));
+  const third = Math.max(1, Math.floor(targetHeight / 3));
   if (segment === 'top') {
-    return {
-      top: 0,
-      height: split
-    };
+    return { top: 0, height: third };
   }
-
-  return {
-    top: split,
-    height: Math.max(1, targetHeight - split)
-  };
+  if (segment === 'middle') {
+    return { top: third, height: third };
+  }
+  // bottom
+  return { top: third * 2, height: Math.max(1, targetHeight - third * 2) };
 }
 
 export async function renderPdfPage(params: {
@@ -234,10 +239,10 @@ export async function renderPdfPage(params: {
   const pdf = await getPdfDocument(file);
   const pdfPage = await pdf.getPage((page.sourcePageIndex ?? 0) + 1);
   const viewport = pdfPage.getViewport({ scale: scale * deviceScale });
-  const surface = document.createElement('canvas');
-  surface.width = targetWidth;
-  surface.height = segmentHeight;
-  const context = surface.getContext('2d', { alpha: false });
+  const surface: OffscreenCanvas | HTMLCanvasElement = offscreenCanvasSupported()
+    ? new OffscreenCanvas(targetWidth, segmentHeight)
+    : (() => { const c = document.createElement('canvas'); c.width = targetWidth; c.height = segmentHeight; return c; })();
+  const context = surface.getContext('2d', { alpha: false }) as CanvasRenderingContext2D | null;
   if (!context) {
     return;
   }
@@ -264,12 +269,28 @@ export async function renderPdfPage(params: {
 
   try {
     await task.promise;
-    storeRenderSurface(cacheKey, surface, coarsePointer);
-    targetContext.drawImage(surface, 0, segmentTop);
+    let cached: ImageBitmap | HTMLCanvasElement;
+    if (surface instanceof OffscreenCanvas) {
+      cached = surface.transferToImageBitmap();
+    } else {
+      cached = surface;
+    }
+    storeRenderSurface(cacheKey, cached, coarsePointer);
+    targetContext.drawImage(cached, 0, segmentTop);
   } finally {
     if (canvasTasks.get(canvas) === task) {
       canvasTasks.delete(canvas);
     }
     pdfPage.cleanup();
+  }
+}
+
+export async function prefetchPdfPage(file: FileRecord, pageIndex: number): Promise<void> {
+  try {
+    const pdf = await getPdfDocument(file);
+    const page = await pdf.getPage(pageIndex + 1);
+    page.cleanup();
+  } catch {
+    // Prefetch is best-effort
   }
 }

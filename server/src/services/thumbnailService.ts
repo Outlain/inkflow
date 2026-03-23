@@ -12,6 +12,14 @@ import { config } from '../config.js';
 import { getUploadPath } from '../lib/fs.js';
 import { ensurePdfPreviewImage } from './pdfTools.js';
 
+// In-memory cache for base64-encoded preview JPEGs used in thumbnails.
+// Key: `${storageKey}:${pageNumber}:${resolvedWidth}`
+const thumbnailJpegCache = new Map<string, string>();
+
+export function clearThumbnailJpegCache(): void {
+  thumbnailJpegCache.clear();
+}
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -150,8 +158,13 @@ export async function renderAnnotatedThumbnailSvg(params: {
   if (page.kind === 'pdf' && pdfSource) {
     const filePath = getUploadPath(config.dataDir, pdfSource.storageKey);
     const previewPath = await ensurePdfPreviewImage(pdfSource.storageKey, filePath, pdfSource.sourcePageIndex + 1, previewWidth);
-    const bytes = await readFile(previewPath);
-    const dataUrl = `data:image/jpeg;base64,${bytes.toString('base64')}`;
+    const cacheKey = `${pdfSource.storageKey}:${pdfSource.sourcePageIndex + 1}:${previewWidth}`;
+    let dataUrl = thumbnailJpegCache.get(cacheKey);
+    if (!dataUrl) {
+      const bytes = await readFile(previewPath);
+      dataUrl = `data:image/jpeg;base64,${bytes.toString('base64')}`;
+      thumbnailJpegCache.set(cacheKey, dataUrl);
+    }
     backgroundMarkup = `<image href="${dataUrl}" x="0" y="0" width="${page.width}" height="${page.height}" preserveAspectRatio="none" />`;
   }
 

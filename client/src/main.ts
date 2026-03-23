@@ -2,6 +2,10 @@ import './styles.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+}
+
 const BENIGN_RUNTIME_ERRORS = [
   'ResizeObserver loop completed with undelivered notifications.',
   'ResizeObserver loop limit exceeded'

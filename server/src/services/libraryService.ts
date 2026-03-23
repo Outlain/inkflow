@@ -859,3 +859,12 @@ export function getPagePdfSource(pageId: string): PagePdfSource {
     sourcePageIndex: page.source_page_index
   };
 }
+
+export function getAllPdfFiles(): Array<{ storageKey: string; pageCount: number }> {
+  const db = getDb();
+  return db.prepare(`
+    SELECT DISTINCT f.storage_key, f.page_count
+    FROM files f
+    WHERE f.mime_type LIKE '%pdf%' OR f.storage_key LIKE '%.pdf'
+  `).all() as Array<{ storageKey: string; pageCount: number }>;
+}

@@ -29,6 +29,7 @@
   import { shouldUseDraft } from '../draftConflict';
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
   import { createClientId } from '../id';
+  import { prefetchPdfPage } from '../pdf';
   import PageShell from './PageShell.svelte';
   import ThumbnailPreview from './ThumbnailPreview.svelte';
   import { ReaderLayoutEngine, type PageShellLayout, type ReaderLayoutResult, type VisibleWindow } from '../reader/layout';
@@ -206,6 +207,8 @@
   let scrollFrame = 0;
   let scrollEndTimer = 0;
   let scrolling = false;
+  let lastScrollY = 0;
+  let lastScrollTime = 0;
   let touchGestureActive = false;
   let touchMomentumActive = false;
   let inkScrollLocked = false;
@@ -1811,7 +1814,11 @@
       closeStrokePopover();
     }
 
-    if (!scrolling) {
+    const velocity = Math.abs((scrollPane.scrollTop - lastScrollY) / (Date.now() - lastScrollTime || 1));
+    lastScrollY = scrollPane.scrollTop;
+    lastScrollTime = Date.now();
+
+    if (velocity > 0.5 && !scrolling) {
       scrolling = true;
       debugTimeline.log('scroll-start', 'Reader scroll started');
     }
@@ -2169,6 +2176,23 @@
     thumbnailSidebarPages.forEach((page) => {
       void loadPageState(page.id);
     });
+  }
+
+  $: if (!scrolling && bundle && activePageIndex >= 0) {
+    void prefetchAdjacentPages(activePageIndex);
+  }
+
+  async function prefetchAdjacentPages(centerIndex: number): Promise<void> {
+    const pages = bundle?.pages ?? [];
+    const targets = [centerIndex - 2, centerIndex - 1, centerIndex + 1, centerIndex + 2]
+      .filter((i) => i >= 0 && i < pages.length && i !== centerIndex);
+    for (const i of targets) {
+      const page = pages[i];
+      if (!page || page.kind !== 'pdf') continue;
+      const file = fileLookup(page);
+      if (!file) continue;
+      void prefetchPdfPage(file, page.sourcePageIndex ?? 0);
+    }
   }
 
   $: if (strokePresetSettingsLoaded) {
@@ -2729,6 +2753,7 @@
                 allowRender={!scrolling && !inkScrollLocked}
                 annotations={pageStates[pageLayout.page.id]?.annotations ?? []}
                 file={fileLookup(pageLayout.page)}
+                activePageIndex={activePageIndex}
                 isActive={pageLayout.pageIndex === activePageIndex}
                 layout={pageLayout}
                 penStrokeWidths={strokePresetSettings.pen}

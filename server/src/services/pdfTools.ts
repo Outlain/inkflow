@@ -10,6 +10,9 @@ const execFileAsync = promisify(execFile);
 const previewTasks = new Map<string, Promise<string>>();
 const previewWidthBuckets = [120, 180, 240, 320, 480, 720, 960, 1280];
 
+const PREVIEW_PREGENERATE_WIDTHS = [240, 480, 960];
+const PREVIEW_CONCURRENCY = 3;
+
 export interface PdfPageMetadata {
   index: number;
   width: number;
@@ -200,4 +203,50 @@ export async function ensurePdfPreviewImage(storageKey: string, sourcePath: stri
 
   previewTasks.set(outputPath, task);
   return task;
+}
+
+export async function preGenerateAllPreviews(
+  storageKey: string,
+  sourcePath: string,
+  pageCount: number
+): Promise<void> {
+  const tasks: Array<() => Promise<void>> = [];
+
+  for (let page = 1; page <= pageCount; page++) {
+    for (const width of PREVIEW_PREGENERATE_WIDTHS) {
+      tasks.push(async () => {
+        try {
+          await ensurePdfPreviewImage(storageKey, sourcePath, page, width);
+        } catch {
+          // Best-effort — individual page failures don't stop the queue
+        }
+      });
+    }
+  }
+
+  // Run PREVIEW_CONCURRENCY tasks at a time
+  let index = 0;
+  async function worker(): Promise<void> {
+    while (index < tasks.length) {
+      const task = tasks[index++];
+      if (task) await task();
+    }
+  }
+
+  const workers = Array.from({ length: PREVIEW_CONCURRENCY }, () => worker());
+  await Promise.all(workers);
+}
+
+export async function ensureAllPreviewsExist(
+  storageKey: string,
+  sourcePath: string,
+  pageCount: number
+): Promise<void> {
+  // Check if any preview is missing, only then run full pre-generation
+  const sampleWidth = 240;
+  const samplePath = getPreviewPath(config.dataDir, storageKey, 1, resolvePreviewWidth(sampleWidth));
+  const hasSample = await fileExists(samplePath);
+  if (!hasSample) {
+    await preGenerateAllPreviews(storageKey, sourcePath, pageCount);
+  }
 }

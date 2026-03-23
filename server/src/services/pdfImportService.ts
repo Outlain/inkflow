@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { ensureDataLayout } from '../lib/fs.js';
 import { createImportedDocument, getDocumentBundle, type InsertPdfSourceInput } from './libraryService.js';
-import { extractPdfMetadata, extractPdfTextPages, finalizeUploadedPdf } from './pdfTools.js';
+import { extractPdfMetadata, extractPdfTextPages, finalizeUploadedPdf, preGenerateAllPreviews } from './pdfTools.js';
 
 function normalizePdfTitle(originalName: string): string {
   return originalName.replace(/\.pdf$/i, '').trim() || 'Imported PDF';
@@ -85,6 +85,9 @@ export async function importPdfFromTemp(params: {
     }))
   });
 
+  // Fire-and-forget background preview generation
+  void preGenerateAllPreviews(storageKey, uploadPath, metadata.pageCount).catch(() => undefined);
+
   return getDocumentBundle(created.document.id);
 }
 
@@ -100,6 +103,9 @@ export async function preparePdfInsertionFromTemp(params: {
 
   const [metadata, textPages] = await Promise.all([extractPdfMetadata(uploadPath), extractPdfTextPages(uploadPath)]);
   const pageIndexes = parsePageRange(params.pageRange, metadata.pageCount);
+
+  // Fire-and-forget background preview generation
+  void preGenerateAllPreviews(storageKey, uploadPath, metadata.pageCount).catch(() => undefined);
 
   return {
     originalName: params.originalName,

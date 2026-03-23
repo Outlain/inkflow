@@ -26,6 +26,7 @@ import {
   deleteDocument,
   deleteFolder,
   deletePage,
+  getAllPdfFiles,
   getDocumentBundle,
   getFileRecord,
   getFileStorageKey,
@@ -40,7 +41,7 @@ import {
   setDocumentBookmark
 } from '../services/libraryService.js';
 import { importPdfFromTemp, preparePdfInsertionFromTemp } from '../services/pdfImportService.js';
-import { ensurePdfPreviewImage } from '../services/pdfTools.js';
+import { ensureAllPreviewsExist, ensurePdfPreviewImage } from '../services/pdfTools.js';
 import { renderAnnotatedThumbnailSvg } from '../services/thumbnailService.js';
 
 const folderSchema = z.object({
@@ -190,7 +191,23 @@ function sendValidationError(reply: { status: (code: number) => { send: (payload
   return reply.status(400).send({ error: message });
 }
 
+async function repairMissingPreviews(): Promise<void> {
+  const pdfFiles = getAllPdfFiles();
+  for (const { storageKey, pageCount } of pdfFiles) {
+    const sourcePath = getUploadPath(config.dataDir, storageKey);
+    await ensureAllPreviewsExist(storageKey, sourcePath, pageCount).catch(() => undefined);
+  }
+}
+
 export async function registerLibraryRoutes(app: FastifyInstance): Promise<void> {
+  // Run on startup — fire and forget
+  void repairMissingPreviews().catch(() => undefined);
+
+  app.post('/admin/repair-previews', async (_request, reply) => {
+    void repairMissingPreviews().catch(() => undefined);
+    return reply.send({ started: true });
+  });
+
   app.get('/library', async () => listLibrary());
 
   app.get('/documents/:documentId', async (request, reply) => {

@@ -17,6 +17,7 @@
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
   import { cancelCanvasRender, renderPdfPage, type PdfRenderSegment } from '../pdf';
+  import { scheduleRender, cancelRender } from '../renderScheduler';
   import type { PageShellLayout } from '../reader/layout';
   import {
     createStroke,
@@ -45,6 +46,7 @@
   export let shapeFill = false;
   export let shapeLineStyle: LineStyle = 'solid';
   export let allowRender = true;
+  export let activePageIndex = 0;
   export let viewportTop = 0;
   export let viewportHeight = 0;
   export let penStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pen] as StrokePresetValues;
@@ -80,6 +82,7 @@
   let selectedShapeId = '';
   let selectedShape: ShapeAnnotation | null = null;
   let renderSuspended = false;
+  let staleScale = 0;
   let inkSessionActive = false;
   let previewWidth = 0;
   let renderIntentKey = '';
@@ -354,30 +357,25 @@
   }
 
   function visibleRenderSegments(): PdfRenderSegment[] {
-    const midpoint = layout.height / 2;
     const pageTop = layout.top;
     const pageBottom = layout.top + layout.height;
     const visibleTop = Math.max(viewportTop, pageTop) - pageTop;
     const visibleBottom = Math.min(viewportTop + viewportHeight, pageBottom) - pageTop;
-    const segments: PdfRenderSegment[] = [];
 
     if (visibleBottom <= 0 || visibleTop >= layout.height) {
       return ['top'];
     }
 
-    if (visibleTop < midpoint) {
-      segments.push('top');
-    }
-
-    if (visibleBottom > midpoint) {
-      segments.push('bottom');
-    }
-
+    const third = layout.height / 3;
+    const segments: PdfRenderSegment[] = [];
+    if (visibleTop < third) segments.push('top');
+    if (visibleTop < third * 2 && visibleBottom > third) segments.push('middle');
+    if (visibleBottom > third * 2) segments.push('bottom');
     return segments.length > 0 ? segments : ['top'];
   }
 
   function fullRenderSegments(): PdfRenderSegment[] {
-    return ['top', 'bottom'];
+    return ['top', 'middle', 'bottom'];
   }
 
   function targetRenderSegments(): PdfRenderSegment[] {
@@ -396,6 +394,9 @@
     const targetSegments = targetRenderSegments();
     isReady = targetSegments.every((segment) => hasSegment(scaleKey, segment));
     fullQualityReady = fullRenderSegments().every((segment) => hasSegment(scaleKey, segment));
+    if (isReady) {
+      staleScale = 0;
+    }
   }
 
   function previewDidLoad(): void {
@@ -432,14 +433,15 @@
 
     const nextScaleKey = Number(layout.scale.toFixed(4)).toFixed(4);
     if (renderedScaleKey !== nextScaleKey) {
+      // Don't clear the canvas — keep old render visible via CSS transform
+      if (renderedScaleKey && canvas && canvas.width > 0) {
+        staleScale = parseFloat(renderedScaleKey);
+      }
       renderedScaleKey = nextScaleKey;
       renderedSegments = new Set<string>();
       isReady = false;
       fullQualityReady = false;
-      if (canvas) {
-        canvas.width = 0;
-        canvas.height = 0;
-      }
+      // Do NOT clear canvas.width/height — old content stays visible
     }
 
     const segments = targetRenderSegments();
@@ -1290,7 +1292,13 @@
       : '';
 
   $: if (canvas && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
-    void renderPdfIfNeeded();
+    scheduleRender(
+      layout.page.id,
+      layout.pageIndex,
+      activePageIndex,
+      () => renderPdfIfNeeded(),
+      () => { renderToken++; }
+    );
   }
 
   $: if (tool === 'hand' && inkSessionActive) {
@@ -1342,7 +1350,12 @@
         on:load={previewDidLoad}
         src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
       />
-      <canvas bind:this={canvas} class:ready={isReady} class="reader-pdf-canvas"></canvas>
+      <canvas
+        bind:this={canvas}
+        class:ready={isReady || staleScale !== 0}
+        class="reader-pdf-canvas"
+        style={staleScale !== 0 && !isReady ? `transform: scale(${layout.scale / staleScale}); transform-origin: top left;` : ''}
+      ></canvas>
     {:else}
       <div class={`reader-template-layer ${templateClass(layout.page)}`}></div>
     {/if}
