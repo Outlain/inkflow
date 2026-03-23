@@ -3,7 +3,8 @@ import { nanoid } from 'nanoid';
 import { config } from '../config.js';
 import { ensureDataLayout } from '../lib/fs.js';
 import { createImportedDocument, getDocumentBundle, type InsertPdfSourceInput } from './libraryService.js';
-import { extractPdfMetadata, extractPdfTextPages, finalizeUploadedPdf, preGenerateAllPreviews } from './pdfTools.js';
+import { createChapter } from './activityService.js';
+import { extractPdfMetadata, extractPdfOutline, extractPdfTextPages, finalizeUploadedPdf, preGenerateAllPreviews } from './pdfTools.js';
 
 function normalizePdfTitle(originalName: string): string {
   return originalName.replace(/\.pdf$/i, '').trim() || 'Imported PDF';
@@ -87,6 +88,23 @@ export async function importPdfFromTemp(params: {
 
   // Fire-and-forget background preview generation
   void preGenerateAllPreviews(storageKey, uploadPath, metadata.pageCount).catch(() => undefined);
+
+  // Auto-extract PDF outline as chapters (fire-and-forget)
+  void extractPdfOutline(uploadPath).then((outline) => {
+    if (outline.length < 2) return; // Need at least 2 entries to form chapters
+    for (let i = 0; i < outline.length; i++) {
+      const entry = outline[i];
+      const nextEntry = outline[i + 1];
+      const endPageIndex = nextEntry ? nextEntry.pageIndex - 1 : metadata.pageCount - 1;
+      if (endPageIndex >= entry.pageIndex) {
+        createChapter(created.document.id, {
+          title: entry.title,
+          startPageIndex: entry.pageIndex,
+          endPageIndex
+        });
+      }
+    }
+  }).catch(() => undefined);
 
   return getDocumentBundle(created.document.id);
 }

@@ -80,6 +80,84 @@ export const schemaSql = `
     document_id UNINDEXED,
     content
   );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    avatar_color TEXT NOT NULL DEFAULT '#2d6e96',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS activity_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_type TEXT NOT NULL CHECK (session_type IN ('app', 'study')),
+    document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+    device_id TEXT NOT NULL,
+    device_label TEXT,
+    started_at TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL,
+    ended_at TEXT,
+    idle_timeout_secs INTEGER NOT NULL DEFAULT 300,
+    active_secs INTEGER NOT NULL DEFAULT 0,
+    heartbeat_count INTEGER NOT NULL DEFAULT 0,
+    first_page_index INTEGER,
+    last_page_index INTEGER,
+    page_range_low INTEGER,
+    page_range_high INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_start ON activity_sessions (user_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_doc_start ON activity_sessions (document_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_open ON activity_sessions (ended_at) WHERE ended_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_sessions_device ON activity_sessions (device_id, started_at);
+
+  CREATE TABLE IF NOT EXISTS activity_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT REFERENCES activity_sessions(id) ON DELETE SET NULL,
+    document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+    page_id TEXT,
+    event_type TEXT NOT NULL,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_events_user_created ON activity_events (user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_events_doc_created ON activity_events (document_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS page_visits (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
+    document_id TEXT NOT NULL,
+    page_id TEXT,
+    page_index INTEGER NOT NULL,
+    entered_at TEXT NOT NULL,
+    exited_at TEXT,
+    dwell_secs INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_page_visits_session ON page_visits (session_id);
+  CREATE INDEX IF NOT EXISTS idx_page_visits_doc ON page_visits (document_id, entered_at);
+
+  CREATE TABLE IF NOT EXISTS document_chapters (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    start_page_index INTEGER NOT NULL,
+    end_page_index INTEGER NOT NULL,
+    position REAL NOT NULL,
+    color TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chapters_document ON document_chapters (document_id, position);
+
+  CREATE TABLE IF NOT EXISTS activity_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `;
 
-export const schemaVersion = '2';
+export const schemaVersion = '3';

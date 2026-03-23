@@ -68,6 +68,8 @@ export type ImportPdfResult = DocumentBundle;
 export interface LibraryPayload {
   folders: FolderRecord[];
   documents: DocumentSummary[];
+  setupRequired?: boolean;
+  currentUser?: UserRecord;
 }
 
 export interface CreateFolderInput {
@@ -208,6 +210,176 @@ export type SyncEvent =
       documentId: string;
       senderClientId: string;
     };
+
+// ── Activity tracking ──
+
+export interface UserRecord {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarColor: string;
+  createdAt: string;
+}
+
+export interface SetupUserRequest {
+  displayName: string;
+}
+
+export type ActivitySessionType = 'app' | 'study';
+
+export type ActivityEventType =
+  | 'session.start'
+  | 'session.end'
+  | 'page.edited'
+  | 'document.created'
+  | 'document.imported'
+  | 'document.exported'
+  | 'page.created'
+  | 'page.deleted'
+  | 'folder.created';
+
+export interface ActivitySessionRecord {
+  id: string;
+  userId: string;
+  sessionType: ActivitySessionType;
+  documentId: string | null;
+  deviceId: string;
+  deviceLabel: string | null;
+  startedAt: string;
+  lastHeartbeatAt: string;
+  endedAt: string | null;
+  idleTimeoutSecs: number;
+  activeSecs: number;
+  heartbeatCount: number;
+  firstPageIndex: number | null;
+  lastPageIndex: number | null;
+  pageRangeLow: number | null;
+  pageRangeHigh: number | null;
+}
+
+export interface ActivityEventRecord {
+  id: string;
+  userId: string;
+  sessionId: string | null;
+  documentId: string | null;
+  pageId: string | null;
+  eventType: ActivityEventType;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface PageVisitRecord {
+  id: string;
+  sessionId: string;
+  documentId: string;
+  pageId: string | null;
+  pageIndex: number;
+  enteredAt: string;
+  exitedAt: string | null;
+  dwellSecs: number;
+}
+
+export interface DocumentChapter {
+  id: string;
+  documentId: string;
+  title: string;
+  startPageIndex: number;
+  endPageIndex: number;
+  position: number;
+  color: string | null;
+  createdAt: string;
+}
+
+export interface StartSessionRequest {
+  sessionType: ActivitySessionType;
+  documentId?: string;
+  deviceId: string;
+  deviceLabel?: string;
+  pageIndex?: number;
+}
+
+export interface HeartbeatRequest {
+  sessionId: string;
+  pageIndex?: number;
+}
+
+export interface EndSessionRequest {
+  sessionId: string;
+  pageIndex?: number;
+}
+
+export interface LogActivityEventsRequest {
+  events: Array<{
+    sessionId?: string;
+    documentId?: string;
+    pageId?: string;
+    eventType: ActivityEventType;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
+export interface ActivityDaySummary {
+  date: string;
+  studySecs: number;
+  appSecs: number;
+  sessions: number;
+  documentsEdited: number;
+}
+
+export interface ActivitySummary {
+  todayStudySecs: number;
+  todayAppSecs: number;
+  todaySessions: number;
+  weekDays: ActivityDaySummary[];
+  currentStreak: number;
+  longestStreak: number;
+  topDocuments: Array<{ documentId: string; title: string; studySecs: number }>;
+}
+
+export interface DocumentActivitySummary {
+  documentId: string;
+  totalStudySecs: number;
+  totalSessions: number;
+  lastOpenedAt: string | null;
+  pageTime: Array<{ pageIndex: number; pageId: string | null; dwellSecs: number }>;
+  chapterTime: Array<{ chapterId: string; title: string; dwellSecs: number }>;
+  recentSessions: ActivitySessionRecord[];
+  dailyActivity: ActivityDaySummary[];
+}
+
+export interface ActivityExportPayload {
+  source: 'inkflow';
+  category: 'study';
+  exportedAt: string;
+  range: { from: string; to: string };
+  sessions: ActivitySessionRecord[];
+  summary: {
+    totalActiveSecs: number;
+    totalSessions: number;
+    documentsTouched: number;
+  };
+}
+
+export interface ActivityConfigPayload {
+  idleTimeoutSecs: number;
+  dailyGoalMins: number;
+  webhookUrl: string | null;
+  webhookEnabled: boolean;
+}
+
+export interface CreateChapterRequest {
+  title: string;
+  startPageIndex: number;
+  endPageIndex: number;
+  color?: string;
+}
+
+export interface UpdateChapterRequest {
+  title?: string;
+  startPageIndex?: number;
+  endPageIndex?: number;
+  color?: string;
+}
 
 export interface DebugEvent {
   id: string;

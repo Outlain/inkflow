@@ -4,8 +4,11 @@
   import LibraryView from './lib/components/LibraryView.svelte';
   import ReaderView from './lib/components/ReaderView.svelte';
   import { navigate, readCurrentRoute, type AppRoute } from './lib/router';
+  import { getAppSession, getStudySession, initTabCoordination } from './lib/activity';
 
   let route: AppRoute = { name: 'library' };
+  const appSessionManager = getAppSession();
+  const studySessionManager = getStudySession();
 
   function syncRoute(): void {
     route = readCurrentRoute();
@@ -16,9 +19,11 @@
       name: 'document',
       documentId
     });
+    studySessionManager.openDocument(documentId);
   }
 
   function closeDocument(): void {
+    studySessionManager.closeDocument();
     route = navigate({ name: 'library' });
   }
 
@@ -34,11 +39,25 @@
   onMount(() => {
     syncRoute();
     window.addEventListener('popstate', syncRoute);
+
+    // Initialize multi-tab coordination
+    initTabCoordination();
+
+    // Start app-level activity tracking
+    appSessionManager.start();
+
+    // If app loaded directly on a document route, start study session
+    if (route.name === 'document') {
+      studySessionManager.openDocument(route.documentId);
+    }
+
     return () => window.removeEventListener('popstate', syncRoute);
   });
 
   onDestroy(() => {
     syncReaderRouteClass(false);
+    appSessionManager.stop();
+    studySessionManager.closeDocument();
   });
 
   $: syncReaderRouteClass(route.name === 'document');

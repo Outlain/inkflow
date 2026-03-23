@@ -13,6 +13,8 @@
     ShapeKind,
     SyncEvent
   } from '@shared/contracts';
+  import { getStudySession, logStudyEvent } from '../activity';
+  import type { DocumentChapter } from '@shared/contracts';
   import {
     deleteDocument,
     deletePage,
@@ -25,6 +27,7 @@
     updateBookmark
   } from '../api';
   import { annotationTextFromAnnotations } from '../annotations';
+  import ChapterManager from './ChapterManager.svelte';
   import { debugTimeline } from '../debug';
   import { shouldUseDraft } from '../draftConflict';
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
@@ -196,6 +199,7 @@
   let searchText = '';
   let searchBusy = false;
   let searchState: SearchResponse = { indexing: false, results: [] };
+  let chapters: DocumentChapter[] = [];
   let compactPagesOpen = false;
   let compactInspectorOpen = false;
   let pageStates: Record<string, PageRuntimeState> = {};
@@ -1557,6 +1561,7 @@
           setPageState(pageId, nextState);
           void persistDraft(pageId);
           debugTimeline.log('save-end', `${item.mode} save finished for ${pageId}`);
+          logStudyEvent('page.edited', documentId, pageId, { mode: item.mode, strokeCount: item.annotations.length });
         } catch (error) {
           const latest = ensurePageState(pageId);
           const message = error instanceof Error ? error.message : 'Could not save page.';
@@ -1966,6 +1971,7 @@
         template: 'ruled'
       });
       statusMessage = `Inserted a ${placement} blank page.`;
+      logStudyEvent('page.created', documentId, undefined, { template: 'ruled', placement });
       await replaceBundle(nextBundle, currentPage()?.id);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not insert blank page.';
@@ -2020,6 +2026,7 @@
     try {
       const nextBundle = await deletePage(currentPage()!.id);
       statusMessage = 'Page deleted.';
+      logStudyEvent('page.deleted', documentId, currentPage()?.id);
       await replaceBundle(nextBundle);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not delete page.';
@@ -2065,6 +2072,7 @@
     }
 
     window.open(`/api/documents/${bundle.document.id}/export`, '_blank', 'noopener');
+    logStudyEvent('document.exported', bundle.document.id);
   }
 
   function connectSync(nextDocumentId: string): void {
@@ -2210,6 +2218,12 @@
   }
 
   $: compactHeaderVisibleState = !compactMode || compactHeaderShown || compactPagesOpen || compactInspectorOpen;
+
+  // Reactive map: pageIndex → chapter title (for thumbnail dividers)
+  $: chapterStartMap = new Map(chapters.map(c => [c.startPageIndex, c.title]));
+
+  // Track active page for study session
+  $: getStudySession().updatePageIndex(activePageIndex);
 </script>
 
 <svelte:head>
@@ -2488,6 +2502,11 @@
       {#if bundle}
         <div class="thumbnail-list">
           {#each bundle.pages as page, pageIndex (page.id)}
+            {#if chapterStartMap.has(pageIndex)}
+              <div class="thumbnail-chapter-divider">
+                <span class="thumbnail-chapter-label">{chapterStartMap.get(pageIndex)}</span>
+              </div>
+            {/if}
             <button
               class:compact-card={compactMode}
               class:active={pageIndex === activePageIndex}
@@ -2817,6 +2836,15 @@
           <h3>Bookmark</h3>
           <p>{bundle.document.bookmarkPageId ? `Saved on page ${bundle.pages.findIndex((page) => page.id === bundle.document.bookmarkPageId) + 1}.` : 'No bookmark set yet.'}</p>
           <button class="button subtle full" type="button" disabled={busy} on:click={bookmarkCurrentPage}>Bookmark this page</button>
+        </section>
+
+        <section class="inspector-card">
+          <ChapterManager
+            documentId={documentId}
+            pageCount={bundle.document.pageCount}
+            activePageIndex={activePageIndex}
+            on:changed={(e) => chapters = e.detail.chapters}
+          />
         </section>
 
         <section class="inspector-card">

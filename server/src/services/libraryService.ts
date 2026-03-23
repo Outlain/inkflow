@@ -21,6 +21,7 @@ import type {
   SearchResult
 } from '../../../shared/src/contracts.js';
 import { getDb } from '../db/database.js';
+import { getDefaultUser } from './activityService.js';
 
 interface FolderRow {
   id: string;
@@ -326,9 +327,13 @@ export function listLibrary(): LibraryPayload {
     .prepare('SELECT * FROM documents ORDER BY updated_at DESC, title COLLATE NOCASE ASC')
     .all() as DocumentRow[];
 
+  const currentUser = getDefaultUser();
+
   return {
     folders: folders.map(mapFolder),
-    documents: documents.map(mapDocument)
+    documents: documents.map(mapDocument),
+    setupRequired: !currentUser,
+    currentUser: currentUser ?? undefined
   };
 }
 

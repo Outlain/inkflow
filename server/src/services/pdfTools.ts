@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, readFile, rename, unlink } from 'node:fs/promi
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { nanoid } from 'nanoid';
+import { PDFDocument } from 'pdf-lib';
 import { config } from '../config.js';
 import { getPreviewDirectory, getPreviewPath } from '../lib/fs.js';
 
@@ -248,5 +249,37 @@ export async function ensureAllPreviewsExist(
   const hasSample = await fileExists(samplePath);
   if (!hasSample) {
     await preGenerateAllPreviews(storageKey, sourcePath, pageCount);
+  }
+}
+
+export interface PdfOutlineEntry {
+  title: string;
+  pageIndex: number;
+}
+
+export async function extractPdfOutline(filePath: string): Promise<PdfOutlineEntry[]> {
+  try {
+    // Try using dumppdf / mutool for outline extraction
+    const { stdout } = await execFileAsync('mutool', ['show', filePath, 'outline'], {
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024
+    });
+
+    const entries: PdfOutlineEntry[] = [];
+    // mutool outline format: indentation + title + page number
+    // e.g. "	Chapter 1 Introduction	1"
+    for (const line of stdout.split('\n')) {
+      const match = line.match(/^[\t\s]*(.+?)\s+#(\d+)/);
+      if (match) {
+        entries.push({
+          title: match[1].trim(),
+          pageIndex: parseInt(match[2], 10) - 1
+        });
+      }
+    }
+    return entries;
+  } catch {
+    // mutool not available or no outline — return empty
+    return [];
   }
 }

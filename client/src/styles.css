@@ -1041,6 +1041,34 @@ img {
   font-size: 0.92rem;
 }
 
+.thumbnail-chapter-divider {
+  width: 100%;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thumbnail-chapter-divider::before,
+.thumbnail-chapter-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(45, 110, 150, 0.25);
+}
+
+.thumbnail-chapter-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-blue);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
 .thumbnail-frame {
   width: 100%;
   min-width: 0;

@@ -52,7 +52,7 @@ export function eraseAnnotations(
   const strokeMode = options.strokeMode ?? 'whole';
   const radiusSquared = radius * radius;
 
-  return annotations.flatMap((annotation) => {
+  return annotations.flatMap((annotation): PageAnnotation[] => {
     if (annotation.type === 'stroke') {
       if (strokeMode === 'partial') {
         return eraseStrokeAnnotation(annotation, eraserPoints, radiusSquared);

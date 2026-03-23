@@ -1,7 +1,12 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import { createFolder, createNotebook, deleteDocument, deleteFolder, fetchLibrary, importPdf } from '../api';
-  import type { DocumentSummary, LibraryPayload, NotebookTemplate } from '@shared/contracts';
+  import { logStudyEvent } from '../activity';
+  import type { DocumentSummary, LibraryPayload, NotebookTemplate, UserRecord } from '@shared/contracts';
+  import ActivityDashboard from './ActivityDashboard.svelte';
+  import ActivitySettings from './ActivitySettings.svelte';
+  import NotebookStatsPopup from './NotebookStatsPopup.svelte';
+  import UserSetupModal from './UserSetupModal.svelte';
 
   const dispatch = createEventDispatcher<{ openDocument: { documentId: string } }>();
 
@@ -17,6 +22,11 @@
   let errorMessage = '';
   let statusMessage = 'The library is ready for fresh notebooks and real PDF imports.';
   let modal: ModalKind = null;
+  let showSetup = false;
+  let currentUser: UserRecord | null = null;
+  let statsDocumentId: string | null = null;
+  let statsDocumentTitle: string = '';
+  let showSettings = false;
   let filePicker: HTMLInputElement | null = null;
   let selectedImportFolderId: string | null = null;
 
@@ -46,11 +56,31 @@
 
     try {
       library = await fetchLibrary();
+      if (library.setupRequired) {
+        showSetup = true;
+      } else if (library.currentUser) {
+        currentUser = library.currentUser;
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not load the library.';
     } finally {
       loading = false;
     }
+  }
+
+  function handleSetupComplete(event: CustomEvent<{ user: UserRecord }>): void {
+    currentUser = event.detail.user;
+    showSetup = false;
+  }
+
+  function openStats(document: DocumentSummary): void {
+    statsDocumentId = document.id;
+    statsDocumentTitle = document.title;
+  }
+
+  function closeStats(): void {
+    statsDocumentId = null;
+    statsDocumentTitle = '';
   }
 
   onMount(loadLibrary);
@@ -104,6 +134,7 @@
         color: folderForm.color
       });
       statusMessage = `Created folder "${folderForm.title.trim()}".`;
+      logStudyEvent('folder.created');
       modal = null;
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not create folder.';
@@ -130,6 +161,7 @@
         coverColor: notebookForm.coverColor
       });
       modal = null;
+      logStudyEvent('document.created', bundle.document.id, undefined, { kind: 'notebook', template: notebookForm.template });
       dispatch('openDocument', { documentId: bundle.document.id });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not create notebook.';
@@ -149,6 +181,7 @@
 
     try {
       const bundle = await importPdf(file, selectedImportFolderId);
+      logStudyEvent('document.imported', bundle.document.id, undefined, { filename: file.name, pageCount: bundle.pages.length });
       dispatch('openDocument', { documentId: bundle.document.id });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not import PDF.';
@@ -297,6 +330,15 @@
       </aside>
     </section>
 
+    {#if currentUser}
+      <section class="panel">
+        <div class="panel-row">
+          <ActivityDashboard />
+          <button class="button subtle" type="button" on:click={() => showSettings = true}>Settings</button>
+        </div>
+      </section>
+    {/if}
+
     {#if errorMessage}
       <div class="status-banner error">{errorMessage}</div>
     {:else}
@@ -339,6 +381,9 @@
 
               <div class="document-actions">
                 <button class="button subtle" type="button" on:click={() => dispatch('openDocument', { documentId: document.id })}>Open</button>
+                {#if currentUser}
+                  <button class="button subtle" type="button" on:click={() => openStats(document)}>Stats</button>
+                {/if}
                 <button class="button subtle danger" type="button" disabled={busy} on:click={() => removeDocument(document)}>Delete</button>
               </div>
             </article>
@@ -454,3 +499,15 @@
     </div>
   {/if}
 </div>
+
+{#if showSetup}
+  <UserSetupModal on:complete={handleSetupComplete} />
+{/if}
+
+{#if statsDocumentId}
+  <NotebookStatsPopup documentId={statsDocumentId} documentTitle={statsDocumentTitle} on:close={closeStats} />
+{/if}
+
+{#if showSettings}
+  <ActivitySettings on:close={() => showSettings = false} />
+{/if}

@@ -11,7 +11,8 @@ export const config = {
   port: integerFromEnv(process.env.PORT, 3000),
   dataDir: process.env.DATA_DIR ?? path.resolve(process.cwd(), 'data'),
   maxUploadBytes: integerFromEnv(process.env.MAX_UPLOAD_BYTES, 1024 * 1024 * 1024),
-  pdfLinearizeThresholdBytes: integerFromEnv(process.env.PDF_LINEARIZE_THRESHOLD_BYTES, 24 * 1024 * 1024)
+  pdfLinearizeThresholdBytes: integerFromEnv(process.env.PDF_LINEARIZE_THRESHOLD_BYTES, 24 * 1024 * 1024),
+  defaultUser: process.env.INKFLOW_DEFAULT_USER ?? null
 };
 
 export const isProduction = config.nodeEnv === 'production';

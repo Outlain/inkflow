@@ -5,8 +5,10 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { config, isProduction } from './config.js';
 import { getDb } from './db/database.js';
+import { registerActivityRoutes } from './routes/activity.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
+import { startReaper } from './services/activityService.js';
 
 const devClientOrigin = 'http://127.0.0.1:5173';
 
@@ -27,6 +29,7 @@ async function createServer() {
 
   await app.register(fastifyWebsocket);
   await app.register(registerLibraryRoutes, { prefix: '/api' });
+  await app.register(registerActivityRoutes, { prefix: '/api' });
   await app.register(registerRealtimeRoutes);
 
 
@@ -96,6 +99,8 @@ async function createServer() {
       return reply.send(Buffer.from(body));
     });
   }
+
+  startReaper();
 
   return app;
 }
