@@ -818,7 +818,7 @@ export function updateChapter(chapterId: string, updates: {
   title?: string;
   startPageIndex?: number;
   endPageIndex?: number;
-  color?: string;
+  color?: string | null;
 }): DocumentChapter | null {
   const db = getDb();
   const existing = getChapterById(chapterId);
