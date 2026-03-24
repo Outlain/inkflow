@@ -2303,28 +2303,24 @@
   class="reader-screen"
   data-compact-header={compactMode && compactHeaderVisibleState ? 'shown' : 'hidden'}
 >
-  <header
-    class:compact-header={compactMode}
-    class="reader-header"
-  >
-    <div class:compact-row={compactMode} class="reader-header-row">
-      <div class:compact-left={compactMode} class="reader-left-actions">
-        <button
-          class:compact-top-button={compactMode}
-          class={compactMode ? 'icon-button' : 'button'}
-          type="button"
-          aria-label={compactMode ? 'Back to library' : undefined}
-          on:click={() => dispatch('close')}
-        >
-          {compactMode ? '‹' : 'Library'}
-        </button>
-        <div class:compact-title={compactMode} class="reader-title-pill">
-          <strong>{bundle?.document.title ?? 'Loading document…'}</strong>
+  {#if compactMode}
+    <header class="reader-header compact-header">
+      <div class="reader-header-row compact-row">
+        <div class="reader-left-actions compact-left">
+          <button
+            class="icon-button compact-top-button"
+            type="button"
+            aria-label="Back to library"
+            on:click={() => dispatch('close')}
+          >
+            ‹
+          </button>
+          <div class="reader-title-pill compact-title">
+            <strong>{bundle?.document.title ?? 'Loading document…'}</strong>
+          </div>
         </div>
-      </div>
 
-      <div class:compact-actions={compactMode} class="reader-right-actions">
-        {#if compactMode}
+        <div class="reader-right-actions compact-actions">
           <button
             class="icon-button compact-top-button"
             type="button"
@@ -2341,19 +2337,10 @@
           >
             ⋯
           </button>
-        {:else}
-          <button class="icon-button" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>Undo</button>
-          <button class="icon-button" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>Redo</button>
-          <button class="icon-button" type="button" on:click={() => changeZoom(-1)}>-</button>
-          <button class="zoom-pill" type="button" aria-label="Reset zoom to 100%" on:click={resetZoom}>{zoomLabel}</button>
-          <button class="icon-button" type="button" on:click={() => changeZoom(1)}>+</button>
-          <button class="button primary" type="button" on:click={exportPdf}>Export PDF</button>
-          <button class="button" type="button" on:click={() => dispatch('close')}>Close</button>
-        {/if}
+        </div>
       </div>
-    </div>
-
-  </header>
+    </header>
+  {/if}
 
   {#if strokePopoverBackdropVisible && strokePopover}
     <button aria-label="Close stroke settings" class="stroke-popover-backdrop" type="button" on:click={closeStrokePopover}></button>
@@ -2641,7 +2628,9 @@
             <div class="middle-menu-divider"></div>
             <button class="middle-menu-utility" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>↺</button>
             <button class="middle-menu-utility" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>↻</button>
-            <button class:active={compactHeaderVisibleState} class="middle-menu-utility" type="button" aria-label={compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'} on:click={toggleCompactHeader}>{compactHeaderVisibleState ? '▴' : '▾'}</button>
+            {#if compactMode}
+              <button class:active={compactHeaderVisibleState} class="middle-menu-utility" type="button" aria-label={compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'} on:click={toggleCompactHeader}>{compactHeaderVisibleState ? '▴' : '▾'}</button>
+            {/if}
             <button class="middle-menu-utility" type="button" aria-label="Zoom out" on:click={() => changeZoom(-1)}>-</button>
             <button class="middle-menu-percent" type="button" aria-label="Reset zoom to 100%" on:click={resetZoom}>{zoomLabel}</button>
             <button class="middle-menu-utility" type="button" aria-label="Zoom in" on:click={() => changeZoom(1)}>+</button>
@@ -2876,6 +2865,15 @@
 
     <aside class:compact-panel={compactMode && compactInspectorOpen} class="inspector-rail">
       {#if bundle}
+        {#if !compactMode}
+          <section class="inspector-card inspector-doc-header">
+            <strong class="inspector-doc-title">{bundle.document.title}</strong>
+            <div class="inspector-doc-actions">
+              <button class="button primary full" type="button" on:click={exportPdf}>Export PDF</button>
+              <button class="button full" type="button" on:click={() => dispatch('close')}>Library</button>
+            </div>
+          </section>
+        {/if}
         <section class="inspector-card">
           <h3>Page Actions</h3>
           <label class="field">
@@ -2949,7 +2947,9 @@
           <h3>Document Info</h3>
           <p>{bundle.document.kind === 'pdf' ? 'Imported PDF document' : 'Notebook document'}</p>
           <p>{bundle.document.pageCount} pages</p>
-          <button class="button subtle full" type="button" on:click={exportPdf}>Export PDF</button>
+          {#if compactMode}
+            <button class="button subtle full" type="button" on:click={exportPdf}>Export PDF</button>
+          {/if}
           <button class="button subtle danger full" type="button" disabled={busy} on:click={removeCurrentPage}>Delete current page</button>
           <button class="button subtle danger full" type="button" disabled={busy} on:click={removeDocumentAndClose}>Delete document</button>
         </section>
