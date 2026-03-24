@@ -189,7 +189,7 @@ Not all visible pages load preview images. The `previewRadius` setting controls 
 
 Pages outside the radius show a skeleton placeholder until they become active or move within radius.
 
-### Priority and Deferral
+### Priority, Deferral, and Scroll Gating
 
 On slow/medium connections, preview images for non-active pages are deferred by 200ms. This gives the active page's preview and PDF render a head start on claiming browser connection slots.
 
@@ -198,6 +198,16 @@ On slow/medium connections, preview images for non-active pages are deferred by 
 - On fast connections: all previews load immediately (no deferral)
 
 The `fetchpriority` attribute is a browser hint that affects request queuing order. It does not affect requests already in flight.
+
+### Scroll Gate (`allowRender`)
+
+On slow/medium connections, preview `<img>` tags are **not mounted** while `allowRender` is false (during fast scroll or large navigation jumps). This prevents intermediate pages from starting preview downloads that would occupy connection slots when the user arrives at the destination.
+
+- `allowRender = false` + preview not yet loaded → `<img>` not in DOM → zero network requests
+- `allowRender = false` + preview already loaded → `<img>` stays (no visual flash)
+- Fast connections bypass this gate entirely — bandwidth is plentiful
+
+Without this gate, a 100-page navbar jump would queue preview downloads for every page that briefly enters the visible window during the scroll animation. Those downloads occupy the browser's ~6 connection slots, delaying the active page's PDF render.
 
 ---
 
