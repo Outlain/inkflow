@@ -1407,7 +1407,7 @@
       {#if (!previewLoaded || !showPreview) && !isReady}
         <div class="reader-page-skeleton"></div>
       {/if}
-      {#if showPreview && !previewDeferred}
+      {#if showPreview && !previewDeferred && (allowRender || previewLoaded || getConnectionQuality() === 'fast')}
         <img
           alt=""
           aria-hidden="true"
