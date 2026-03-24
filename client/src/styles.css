@@ -547,7 +547,7 @@ img {
 .reader-screen {
   position: relative;
   height: 100vh;
-  padding: 20px;
+  padding: 0.5vh;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: 16px;
@@ -1127,6 +1127,8 @@ img {
 
 .reader-screen:not(.compact-mode) .thumbnail-rail {
   padding: 16px;
+  margin-top: 2.5vh;
+  margin-bottom: 2.5vh;
 }
 
 .reader-screen:not(.compact-mode) .thumbnail-list {
@@ -1890,6 +1892,8 @@ img {
   gap: 16px;
   align-content: start;
   overflow: auto;
+  margin-top: 2.5vh;
+  margin-bottom: 2.5vh;
 }
 
 .inspector-card {
