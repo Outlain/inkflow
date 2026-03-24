@@ -7,6 +7,7 @@
   import ActivitySettings from './ActivitySettings.svelte';
   import NotebookStatsPopup from './NotebookStatsPopup.svelte';
   import UserSetupModal from './UserSetupModal.svelte';
+  import { isLowDataMode, setLowDataMode, getConnectionQuality } from '../networkMonitor';
 
   const dispatch = createEventDispatcher<{ openDocument: { documentId: string } }>();
 
@@ -27,6 +28,7 @@
   let statsDocumentId: string | null = null;
   let statsDocumentTitle: string = '';
   let showSettings = false;
+  let lowDataMode = isLowDataMode();
   let filePicker: HTMLInputElement | null = null;
   let selectedImportFolderId: string | null = null;
 
@@ -338,6 +340,30 @@
         </div>
       </section>
     {/if}
+
+    <section class="panel">
+      <div class="panel-row" style="gap: 8px; align-items: center;">
+        <span class="network-quality-label">
+          Network: <strong>{getConnectionQuality()}</strong>
+        </span>
+        <button
+          class="button subtle"
+          class:active={lowDataMode}
+          type="button"
+          on:click={() => {
+            if (lowDataMode) {
+              setLowDataMode(null);
+              lowDataMode = false;
+            } else {
+              setLowDataMode('slow');
+              lowDataMode = true;
+            }
+          }}
+        >
+          {lowDataMode ? 'Low Data Mode: ON' : 'Low Data Mode: OFF'}
+        </button>
+      </div>
+    </section>
 
     {#if errorMessage}
       <div class="status-banner error">{errorMessage}</div>

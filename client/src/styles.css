@@ -137,6 +137,21 @@ img {
   gap: 12px;
 }
 
+.network-quality-label {
+  font-size: 13px;
+  color: #6b7e8f;
+  white-space: nowrap;
+}
+
+.network-quality-label strong {
+  text-transform: capitalize;
+}
+
+.button.subtle.active {
+  background: #2c688e;
+  color: #fff;
+}
+
 .reader-header-row {
   display: flex;
   justify-content: space-between;

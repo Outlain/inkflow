@@ -16,7 +16,8 @@
   } from '@shared/contracts';
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
-  import { cancelCanvasRender, renderPdfPage, type PdfRenderSegment } from '../pdf';
+  import { cancelCanvasRender, renderPdfPage, measurePreviewLoad, type PdfRenderSegment } from '../pdf';
+  import { getNetworkConfig, getConnectionQuality } from '../networkMonitor';
   import { scheduleRender, cancelRender } from '../renderScheduler';
   import type { PageShellLayout } from '../reader/layout';
   import {
@@ -76,6 +77,7 @@
   let fullQualityReady = layout.page.kind !== 'pdf';
   let previewLoaded = layout.page.kind !== 'pdf';
   let previewLoadedPageId = layout.page.kind === 'pdf' ? '' : layout.page.id;
+  let previewLoadStart = 0;
   let activePointerId: number | null = null;
   let activePoints: PagePoint[] = [];
   let previewAnnotations: PageAnnotation[] | null = null;
@@ -85,6 +87,8 @@
   let pendingScaleChange = false;
   let inkSessionActive = false;
   let previewWidth = 0;
+  let previewDeferred = false;
+  let previewDeferTimer: ReturnType<typeof setTimeout> | null = null;
   let renderIntentKey = '';
   let eraserIndicatorPoint: PagePoint | null = null;
   let eraserIndicatorVisible = false;
@@ -402,9 +406,17 @@
     }
   }
 
-  function previewDidLoad(): void {
+  function previewDidLoad(event: Event): void {
     previewLoaded = true;
     previewLoadedPageId = layout.page.id;
+    // Measure throughput from preview image load for network quality detection
+    if (previewLoadStart > 0) {
+      const img = event.target as HTMLImageElement;
+      // Estimate transfer size from image dimensions (~0.5 bytes per pixel for JPEG)
+      const estimatedBytes = img.naturalWidth * img.naturalHeight * 0.5;
+      measurePreviewLoad(previewLoadStart, estimatedBytes);
+      previewLoadStart = 0;
+    }
   }
 
   function hasStylusTouch(event: TouchEvent): boolean {
@@ -1276,6 +1288,7 @@
     }
     setInkSession(false);
     renderToken += 1;
+    if (previewDeferTimer) { clearTimeout(previewDeferTimer); previewDeferTimer = null; }
     debugTimeline.log('shell-unmounted', `Shell unmounted for page ${layout.pageIndex + 1}`);
   });
 
@@ -1312,6 +1325,9 @@
       ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${viewportTop}:${viewportHeight}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
       : '';
 
+  // All connection speeds get full-res PDF.js rendering. On slow/medium,
+  // the per-page PDF endpoint provides a self-contained ~100-500KB file
+  // that downloads in one request. No dwell delay needed.
   $: if (canvas && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
     scheduleRender(
       layout.page.id,
@@ -1339,9 +1355,39 @@
     clearEraserIndicator();
   }
 
-  $: previewWidth = Math.max(320, Math.min(Math.ceil(layout.width), 960));
+  $: previewWidth = Math.max(120, Math.min(Math.ceil(layout.width), getNetworkConfig().maxPreviewWidth));
+
+  // On slow connections, skip preview images for pages far from the active page.
+  // This prevents preview HTTP requests from consuming connection slots that the
+  // active page's PDF.js range requests need.
+  // slow = no previews (skeleton → canvas only), medium = active ± 2, fast = all
+  $: showPreview = (() => {
+    const config = getNetworkConfig();
+    if (config.previewRadius === Infinity) return true;
+    return Math.abs(layout.pageIndex - activePageIndex) <= config.previewRadius;
+  })();
+
+  // On slow/medium connections, defer preview src for non-active pages.
+  // This gives the active page's preview and PDF first access to connection slots.
+  // Active page gets src immediately; neighbors get it after 200ms.
+  $: {
+    const slow = getConnectionQuality() !== 'fast';
+    if (!slow || isActive) {
+      // Fast connection or active page: load immediately
+      previewDeferred = false;
+      if (previewDeferTimer) { clearTimeout(previewDeferTimer); previewDeferTimer = null; }
+    } else if (showPreview && slow) {
+      // Non-active page on slow/medium: defer to let active page go first
+      previewDeferred = true;
+      if (previewDeferTimer) clearTimeout(previewDeferTimer);
+      previewDeferTimer = setTimeout(() => { previewDeferred = false; previewDeferTimer = null; }, 200);
+    }
+  }
+
+
   $: if (layout.page.kind === 'pdf' && previewLoadedPageId !== layout.page.id) {
     previewLoaded = false;
+    previewLoadStart = performance.now();
   }
 
   $: eraserIndicatorStyle =
@@ -1358,19 +1404,22 @@
 >
   <div class="reader-page-paper">
     {#if layout.page.kind === 'pdf'}
-      {#if !previewLoaded && !isReady}
+      {#if (!previewLoaded || !showPreview) && !isReady}
         <div class="reader-page-skeleton"></div>
       {/if}
-      <img
-        alt=""
-        aria-hidden="true"
-        class:ready={fullQualityReady}
-        class="reader-pdf-preview"
-        decoding="async"
-        loading="eager"
-        on:load={previewDidLoad}
-        src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
-      />
+      {#if showPreview && !previewDeferred}
+        <img
+          alt=""
+          aria-hidden="true"
+          class:ready={fullQualityReady}
+          class="reader-pdf-preview"
+          decoding="async"
+          fetchpriority={isActive ? 'high' : 'low'}
+          loading={getConnectionQuality() === 'fast' ? 'eager' : 'lazy'}
+          on:load={previewDidLoad}
+          src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
+        />
+      {/if}
       <canvas bind:this={canvas} class:ready={isReady} class="reader-pdf-canvas"></canvas>
     {:else}
       <div class={`reader-template-layer ${templateClass(layout.page)}`}></div>

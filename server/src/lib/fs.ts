@@ -45,3 +45,7 @@ export function getPreviewDirectory(root: string, storageKey: string): string {
 export function getPreviewPath(root: string, storageKey: string, pageNumber: number, width: number): string {
   return path.join(getPreviewDirectory(root, storageKey), `page-${String(pageNumber).padStart(5, '0')}-w${width}.jpg`);
 }
+
+export function getPagePdfPath(root: string, storageKey: string, pageNumber: number): string {
+  return path.join(getPreviewDirectory(root, storageKey), `page-${String(pageNumber).padStart(5, '0')}.pdf`);
+}

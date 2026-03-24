@@ -1,5 +1,6 @@
 import path from 'node:path';
 import Fastify from 'fastify';
+import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
@@ -18,6 +19,10 @@ async function createServer() {
   const app = Fastify({
     logger: true,
     bodyLimit: config.maxUploadBytes
+  });
+
+  await app.register(fastifyCompress, {
+    threshold: 1024 // compress responses > 1KB
   });
 
   await app.register(fastifyMultipart, {

@@ -1,5 +1,6 @@
 .git
 .github
+.claude
 node_modules
 dist
 data
@@ -23,6 +24,8 @@ MIGRATION.md
 PERFORMANCE_BUDGETS.md
 README.md
 RELEASE_GATES.md
+INTERNALS.md
+CLAUDE.md
 docker-compose*.yml
 scripts
 

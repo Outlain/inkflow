@@ -47,7 +47,8 @@ Physical iPad Safari + Apple Pencil QA is still required for the strict release 
 
 ## Key Docs
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — high-level system design, module boundaries, data model
+- [`INTERNALS.md`](./INTERNALS.md) — how the reader engine works: page loading pipeline, adaptive network behavior, PDF rendering segments, background pre-downloading, scroll coordination, service worker caching, and connection slot management
 - [`RELEASE_GATES.md`](./RELEASE_GATES.md)
 - [`MIGRATION.md`](./MIGRATION.md)
 - [`PERFORMANCE_BUDGETS.md`](./PERFORMANCE_BUDGETS.md)

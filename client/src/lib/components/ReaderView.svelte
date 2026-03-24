@@ -33,6 +33,14 @@
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
   import { createClientId } from '../id';
   import { prefetchPdfPage } from '../pdf';
+  import { getNetworkConfig, getConnectionQuality, onQualityChange } from '../networkMonitor';
+  import { waitForIdle } from '../renderScheduler';
+  import {
+    startBackgroundDownload,
+    stopBackgroundDownload,
+    updateActiveIndex,
+    isBackgroundDownloadActive
+  } from '../backgroundDownloader';
   import PageShell from './PageShell.svelte';
   import ThumbnailPreview from './ThumbnailPreview.svelte';
   import { ReaderLayoutEngine, type PageShellLayout, type ReaderLayoutResult, type VisibleWindow } from '../reader/layout';
@@ -257,6 +265,7 @@
   let canRedoAvailable = false;
   let currentPageAnnotationCount = 0;
   let draftsAvailable = true;
+  let qualityUnsub: (() => void) | null = null;
   let thumbnailSidebarPages: DocumentBundle['pages'] = [];
   let previewAnnotationsByPage: Record<string, PageAnnotation[] | null> = {};
   let thumbnailRenderVersionByPage: Record<string, number> = {};
@@ -1157,7 +1166,8 @@
   ] as const;
 
   function thumbnailPreviewWidth(): number {
-    return compactMode ? 120 : 240;
+    const maxWidth = getNetworkConfig().maxThumbnailWidth;
+    return compactMode ? Math.min(120, maxWidth) : Math.min(240, maxWidth);
   }
 
   function thumbnailAnnotations(pageId: string): PageAnnotation[] {
@@ -1712,6 +1722,11 @@
           : 0;
         scrollToPage(Math.max(bookmarkIndex, 0), 'auto');
       }
+
+      // Start background pre-downloading per-page PDFs on slow/medium connections
+      if (getConnectionQuality() !== 'fast') {
+        void startBackgroundDownload(nextBundle.pages, Math.max(activePageIndex, 0));
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Could not open the document.';
     } finally {
@@ -1720,6 +1735,7 @@
   }
 
   async function replaceBundle(nextBundle: DocumentBundle, focusPageId?: string): Promise<void> {
+    stopBackgroundDownload();
     bundle = nextBundle;
     connectSync(nextBundle.document.id);
     pageStates = Object.fromEntries(
@@ -1753,11 +1769,23 @@
     const targetPageId = focusPageId ?? nextBundle.document.bookmarkPageId ?? nextBundle.pages[activePageIndex]?.id ?? nextBundle.pages[0]?.id;
     const targetIndex = targetPageId ? nextBundle.pages.findIndex((page) => page.id === targetPageId) : 0;
     scrollToPage(Math.max(targetIndex, 0), 'auto');
+
+    if (getConnectionQuality() !== 'fast') {
+      void startBackgroundDownload(nextBundle.pages, Math.max(targetIndex, 0));
+    }
   }
 
   function scrollToPage(pageIndex: number, behavior: ScrollBehavior = 'smooth'): void {
     if (!scrollPane || !layout.pages[pageIndex]) {
       return;
+    }
+
+    // For large jumps (e.g., navbar navigation), suspend rendering during the
+    // transition so intermediate pages don't waste connection slots with PDF
+    // downloads. The scrollEndTimer (140ms after scroll stops) will reset this.
+    const jumpDistance = Math.abs(pageIndex - activePageIndex);
+    if (jumpDistance > 3 && !scrolling) {
+      scrolling = true;
     }
 
     const page = layout.pages[pageIndex];
@@ -2133,6 +2161,16 @@
     if (centerPane) {
       resizeObserver.observe(centerPane);
     }
+
+    // Start/stop background downloader when connection quality changes
+    const unsubQuality = onQualityChange((quality) => {
+      if (quality !== 'fast' && bundle && !isBackgroundDownloadActive()) {
+        void startBackgroundDownload(bundle.pages, Math.max(activePageIndex, 0));
+      } else if (quality === 'fast') {
+        stopBackgroundDownload();
+      }
+    });
+    qualityUnsub = unsubQuality;
   });
 
   onDestroy(() => {
@@ -2147,6 +2185,8 @@
     window.clearInterval(timeKeeperTimer);
     cancelLongPress();
     syncSocket?.close();
+    stopBackgroundDownload();
+    qualityUnsub?.();
   });
 
   $: if (documentId && documentId !== pendingLoadDocumentId) {
@@ -2179,25 +2219,49 @@
   }
 
   $: if (thumbnailSidebarPages.length > 0) {
-    thumbnailSidebarPages.forEach((page) => {
-      void loadPageState(page.id);
-    });
+    // On slow/medium connections, skip eager annotation loading for thumbnails.
+    // Thumbnails use the server-rendered SVG preview which doesn't need annotation data.
+    // This prevents 37MB+ annotation payloads from choking the connection.
+    if (getConnectionQuality() === 'fast') {
+      thumbnailSidebarPages.forEach((page) => {
+        void loadPageState(page.id);
+      });
+    }
   }
 
   $: if (!scrolling && bundle && activePageIndex >= 0) {
     void prefetchAdjacentPages(activePageIndex);
+
+    // Abort in-flight background downloads to free connection slots for
+    // the active page. New background downloads restart automatically
+    // with `priority: 'low'` so the browser serves the active page's
+    // PDF.js render and preview first.
+    updateActiveIndex(activePageIndex);
   }
 
   async function prefetchAdjacentPages(centerIndex: number): Promise<void> {
+    const quality = getConnectionQuality();
+    // On slow/medium connections, wait for visible pages to finish rendering
+    // before firing prefetch requests. This prevents prefetch from stealing
+    // the browser's limited connection slots (~6 per origin) from the
+    // active page's PDF.js range requests.
+    if (quality !== 'fast') {
+      await waitForIdle();
+    }
+
     const pages = bundle?.pages ?? [];
-    const targets = [centerIndex - 1, centerIndex + 1, centerIndex - 2, centerIndex + 2, centerIndex - 3, centerIndex + 3, centerIndex - 4, centerIndex + 4]
-      .filter((i) => i >= 0 && i < pages.length && i !== centerIndex);
+    const radius = getNetworkConfig().prefetchRadius;
+    const offsets: number[] = [];
+    for (let d = 1; d <= radius; d += 1) {
+      offsets.push(centerIndex - d, centerIndex + d);
+    }
+    const targets = offsets.filter((i) => i >= 0 && i < pages.length && i !== centerIndex);
     for (const i of targets) {
       const page = pages[i];
       if (!page || page.kind !== 'pdf') continue;
       const file = fileLookup(page);
       if (!file) continue;
-      void prefetchPdfPage(file, page.sourcePageIndex ?? 0);
+      void prefetchPdfPage(file, page);
     }
   }
 

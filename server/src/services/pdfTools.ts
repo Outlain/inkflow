@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { nanoid } from 'nanoid';
 import { PDFDocument } from 'pdf-lib';
 import { config } from '../config.js';
-import { getPreviewDirectory, getPreviewPath } from '../lib/fs.js';
+import { getPreviewDirectory, getPreviewPath, getPagePdfPath } from '../lib/fs.js';
 
 const execFileAsync = promisify(execFile);
 const previewTasks = new Map<string, Promise<string>>();
@@ -203,6 +203,56 @@ export async function ensurePdfPreviewImage(storageKey: string, sourcePath: stri
   })();
 
   previewTasks.set(outputPath, task);
+  return task;
+}
+
+// Per-page PDF extraction — extracts a single page from the source PDF using
+// qpdf and caches it on disk. Each extracted page is self-contained with its
+// own fonts and images. Used by slow/medium connections so the client can
+// download ~100-500KB per page instead of ranging into the full 81MB file.
+const pagePdfTasks = new Map<string, Promise<string>>();
+
+export async function ensurePagePdf(storageKey: string, sourcePath: string, pageNumber: number): Promise<string> {
+  const outputPath = getPagePdfPath(config.dataDir, storageKey, pageNumber);
+  if (await fileExists(outputPath)) {
+    return outputPath;
+  }
+
+  const existingTask = pagePdfTasks.get(outputPath);
+  if (existingTask) {
+    return existingTask;
+  }
+
+  const outputDir = getPreviewDirectory(config.dataDir, storageKey);
+  await mkdir(outputDir, { recursive: true });
+
+  const tempOutputPath = path.join(outputDir, `page-${String(pageNumber).padStart(5, '0')}.pdf.tmp.${nanoid(6)}`);
+
+  const task = (async () => {
+    try {
+      await execFileAsync('qpdf', [
+        sourcePath,
+        '--pages', sourcePath, `${pageNumber}`, '--',
+        tempOutputPath
+      ], {
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024
+      });
+      await rename(tempOutputPath, outputPath);
+      return outputPath;
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : '';
+      if (code === 'ENOENT') {
+        throw new Error('qpdf is not installed — cannot extract per-page PDF');
+      }
+      throw error;
+    } finally {
+      pagePdfTasks.delete(outputPath);
+      await unlink(tempOutputPath).catch(() => undefined);
+    }
+  })();
+
+  pagePdfTasks.set(outputPath, task);
   return task;
 }
 

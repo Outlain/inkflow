@@ -5,6 +5,8 @@
   import ReaderView from './lib/components/ReaderView.svelte';
   import { navigate, readCurrentRoute, type AppRoute } from './lib/router';
   import { getAppSession, getStudySession, initTabCoordination } from './lib/activity';
+  import { initNetworkMonitor } from './lib/networkMonitor';
+  import NetworkToast from './lib/components/NetworkToast.svelte';
 
   let route: AppRoute = { name: 'library' };
   const appSessionManager = getAppSession();
@@ -40,6 +42,9 @@
     syncRoute();
     window.addEventListener('popstate', syncRoute);
 
+    // Initialize network quality monitor
+    initNetworkMonitor();
+
     // Initialize multi-tab coordination
     initTabCoordination();
 
@@ -69,4 +74,5 @@
   <LibraryView on:openDocument={(event) => openDocument(event.detail.documentId)} />
 {/if}
 
+<NetworkToast />
 <DebugOverlay />

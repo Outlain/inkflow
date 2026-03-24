@@ -41,7 +41,7 @@ import {
   setDocumentBookmark
 } from '../services/libraryService.js';
 import { importPdfFromTemp, preparePdfInsertionFromTemp } from '../services/pdfImportService.js';
-import { ensureAllPreviewsExist, ensurePdfPreviewImage } from '../services/pdfTools.js';
+import { ensureAllPreviewsExist, ensurePagePdf, ensurePdfPreviewImage } from '../services/pdfTools.js';
 import { renderAnnotatedThumbnailSvg } from '../services/thumbnailService.js';
 
 const folderSchema = z.object({
@@ -498,6 +498,24 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       return reply.type('image/jpeg').header('cache-control', 'public, max-age=31536000, immutable').send(fs.createReadStream(previewPath));
     } catch (error) {
       return reply.status(404).send({ error: error instanceof Error ? error.message : 'Preview not available.' });
+    }
+  });
+
+  // Per-page PDF endpoint — extracts a single page from the source PDF on demand.
+  // Used by slow/medium connections so PDF.js can download ~100-500KB per page
+  // instead of needing range requests into the full 81MB file.
+  app.get('/pages/:pageId/pdf', async (request, reply) => {
+    try {
+      const { pageId } = request.params as { pageId: string };
+      const source = getPagePdfSource(pageId);
+      const filePath = getUploadPath(config.dataDir, source.storageKey);
+      const pagePdfPath = await ensurePagePdf(source.storageKey, filePath, source.sourcePageIndex + 1);
+      return reply
+        .type('application/pdf')
+        .header('cache-control', 'public, max-age=31536000, immutable')
+        .send(fs.createReadStream(pagePdfPath));
+    } catch (error) {
+      return reply.status(404).send({ error: error instanceof Error ? error.message : 'Page PDF not available.' });
     }
   });
 

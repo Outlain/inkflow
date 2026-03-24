@@ -1,6 +1,7 @@
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { FileRecord, PageRecord } from '@shared/contracts';
+import { getNetworkConfig, getConnectionQuality, recordThroughput } from './networkMonitor';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -12,7 +13,6 @@ const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasEl
 const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
 // ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile
 const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
-const PDF_RANGE_CHUNK_SIZE_BYTES = 1024 * 1024;
 
 export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
 
@@ -37,11 +37,49 @@ export function getPdfDocument(file: FileRecord): Promise<PDFDocumentProxy> {
     return existing;
   }
 
+  const networkConfig = getNetworkConfig();
+  const quality = getConnectionQuality();
+
+  // On fast connections: disableStream=false lets PDF.js stream the full file
+  // in one request. The service worker caches the 200 response so subsequent
+  // visits are instant. This is ideal when bandwidth is plentiful.
+  //
+  // On slow/medium connections: disableStream=true forces PDF.js to use range
+  // requests from the very first request. Without this, PDF.js makes a non-range
+  // initial request, the server returns the entire PDF (200), and the service
+  // worker caches all 81MB — defeating all our chunk size optimizations.
+  // With range requests, only the data needed for the current page is fetched.
+  const useStream = quality === 'fast';
+
   const task = getDocument({
     url: file.url,
     disableAutoFetch: true,
-    disableStream: false,
-    rangeChunkSize: PDF_RANGE_CHUNK_SIZE_BYTES,
+    disableStream: !useStream,
+    rangeChunkSize: networkConfig.rangeChunkSize,
+    stopAtErrors: false
+  }).promise;
+
+  documentTasks.set(key, task);
+  return task;
+}
+
+/**
+ * Get a PDF document containing just one page, extracted server-side.
+ * Used on slow/medium connections so PDF.js only downloads ~100-500KB
+ * (self-contained page with embedded fonts) instead of ranging into the
+ * full 81MB monolith.
+ */
+export function getPagePdfDocument(pageId: string): Promise<PDFDocumentProxy> {
+  const key = `page:${pageId}`;
+  const existing = documentTasks.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const task = getDocument({
+    url: `/api/pages/${pageId}/pdf`,
+    disableAutoFetch: false,   // small file — download everything
+    disableStream: false,      // stream the full small file
     stopAtErrors: false
   }).promise;
 
@@ -62,6 +100,14 @@ export function resolvePdfDeviceScale(options: {
 }): number {
   const { devicePixelRatio, pageScale, coarsePointer, viewportWidth } = options;
   const safeRatio = Math.max(devicePixelRatio || 1, 1);
+  const quality = getConnectionQuality();
+
+  // On slow connections, render at 1× DPR regardless of device.
+  // This halves the pixel dimensions, reducing the amount of font/image data
+  // PDF.js needs to fetch and the canvas memory required.
+  if (quality === 'slow') {
+    return 1;
+  }
 
   if (!coarsePointer && viewportWidth > 1080) {
     // Allow full native DPR on desktop for crisp rendering
@@ -239,8 +285,19 @@ export async function renderPdfPage(params: {
     return;
   }
 
-  const pdf = await getPdfDocument(file);
-  const pdfPage = await pdf.getPage((page.sourcePageIndex ?? 0) + 1);
+  // On slow/medium connections, use the per-page PDF endpoint.
+  // Each extracted page is a self-contained ~100-500KB PDF that downloads
+  // in one request, vs ranging into the full 81MB file.
+  const quality = getConnectionQuality();
+  let pdf: PDFDocumentProxy;
+  let pdfPage;
+  if (quality !== 'fast') {
+    pdf = await getPagePdfDocument(page.id);
+    pdfPage = await pdf.getPage(1);  // per-page PDF always has just page 1
+  } else {
+    pdf = await getPdfDocument(file);
+    pdfPage = await pdf.getPage((page.sourcePageIndex ?? 0) + 1);
+  }
   const viewport = pdfPage.getViewport({ scale: scale * deviceScale });
   const surface: OffscreenCanvas | HTMLCanvasElement = offscreenCanvasSupported()
     ? new OffscreenCanvas(targetWidth, segmentHeight)
@@ -288,12 +345,30 @@ export async function renderPdfPage(params: {
   }
 }
 
-export async function prefetchPdfPage(file: FileRecord, pageIndex: number): Promise<void> {
+export async function prefetchPdfPage(file: FileRecord, page: PageRecord): Promise<void> {
   try {
-    const pdf = await getPdfDocument(file);
-    const page = await pdf.getPage(pageIndex + 1);
-    page.cleanup();
+    const quality = getConnectionQuality();
+    let pdf: PDFDocumentProxy;
+    if (quality !== 'fast') {
+      // On slow/medium, prefetch the per-page PDF so it's cached for rendering
+      pdf = await getPagePdfDocument(page.id);
+    } else {
+      pdf = await getPdfDocument(file);
+    }
+    const pdfPage = await pdf.getPage(quality !== 'fast' ? 1 : (page.sourcePageIndex ?? 0) + 1);
+    pdfPage.cleanup();
   } catch {
     // Prefetch is best-effort
+  }
+}
+
+/**
+ * Measure throughput from an image load event.
+ * Called from PageShell when a preview image finishes loading.
+ */
+export function measurePreviewLoad(startTime: number, transferSize: number): void {
+  const duration = performance.now() - startTime;
+  if (duration > 50 && transferSize > 0) {
+    recordThroughput(transferSize, duration);
   }
 }

@@ -10,6 +10,7 @@ type RenderJob = {
 
 const pendingJobs = new Map<string, RenderJob>();
 let running = false;
+let idleResolvers: (() => void)[] = [];
 
 export function scheduleRender(key: string, pageIndex: number, activeIndex: number, run: () => Promise<void>, cancel: () => void): void {
   const priority = Math.abs(pageIndex - activeIndex);
@@ -34,6 +35,26 @@ export function clearScheduler(): void {
   pendingJobs.clear();
 }
 
+/**
+ * Returns a promise that resolves when the render queue is empty (all
+ * priority renders have completed). Use this to defer prefetching until
+ * the active page and nearby pages have finished rendering, freeing up
+ * browser connection slots on slow networks.
+ */
+export function waitForIdle(): Promise<void> {
+  if (!running && pendingJobs.size === 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    idleResolvers.push(resolve);
+  });
+}
+
+/** Whether the scheduler is currently processing render jobs. */
+export function isSchedulerBusy(): boolean {
+  return running || pendingJobs.size > 0;
+}
+
 async function drainJobs(): Promise<void> {
   running = true;
   while (pendingJobs.size > 0) {
@@ -56,4 +77,10 @@ async function drainJobs(): Promise<void> {
     }
   }
   running = false;
+  // Notify anyone waiting for the queue to drain
+  const resolvers = idleResolvers;
+  idleResolvers = [];
+  for (const resolve of resolvers) {
+    resolve();
+  }
 }
