@@ -87,7 +87,9 @@
 
   // ── Internal state ──
 
-  let canvas: HTMLCanvasElement | null = null;
+  let topCanvas: HTMLCanvasElement | null = null;
+  let middleCanvas: HTMLCanvasElement | null = null;
+  let bottomCanvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
   let renderToken = 0;
   let renderedScaleKey = '';
@@ -466,6 +468,50 @@
     return renderedSegments.has(segmentKey(scaleKey, segment));
   }
 
+  function canvasForSegment(segment: Exclude<PdfRenderSegment, 'full'>): HTMLCanvasElement | null {
+    if (segment === 'top') {
+      return topCanvas;
+    }
+
+    if (segment === 'middle') {
+      return middleCanvas;
+    }
+
+    return bottomCanvas;
+  }
+
+  function cancelSegmentRenders(): void {
+    if (topCanvas) {
+      cancelCanvasRender(topCanvas);
+    }
+
+    if (middleCanvas) {
+      cancelCanvasRender(middleCanvas);
+    }
+
+    if (bottomCanvas) {
+      cancelCanvasRender(bottomCanvas);
+    }
+  }
+
+  function segmentCanvasStyle(segment: Exclude<PdfRenderSegment, 'full'>): string {
+    const totalHeight = Math.max(1, Math.floor(layout.height));
+    const third = Math.max(1, Math.floor(totalHeight / 3));
+
+    const top = segment === 'top' ? 0 : segment === 'middle' ? third : third * 2;
+    const height = segment === 'bottom' ? Math.max(1, totalHeight - third * 2) : third;
+
+    return `top:${top}px; height:${height}px;`;
+  }
+
+  function segmentReady(segment: Exclude<PdfRenderSegment, 'full'>): boolean {
+    if (layout.page.kind !== 'pdf' || !renderedScaleKey) {
+      return false;
+    }
+
+    return hasSegment(renderedScaleKey, segment);
+  }
+
   function recomputeRenderReadiness(scaleKey: string): void {
     const targetSegments = targetRenderSegments();
     isReady = targetSegments.every((segment) => hasSegment(scaleKey, segment));
@@ -511,7 +557,7 @@
   }
 
   async function renderPdfIfNeeded(): Promise<void> {
-    if (!canvas || !file || layout.page.kind !== 'pdf') {
+    if (!topCanvas || !middleCanvas || !bottomCanvas || !file || layout.page.kind !== 'pdf') {
       return;
     }
 
@@ -527,30 +573,40 @@
       fullQualityReady = false;
     }
 
-    const segments = targetRenderSegments();
-    const missingSegments = segments.filter((segment) => !hasSegment(nextScaleKey, segment));
-    if (missingSegments.length === 0) {
-      recomputeRenderReadiness(nextScaleKey);
+    if (!allowRender) {
       return;
     }
 
-    if (!allowRender) {
+    const visibleSegments = targetRenderSegments();
+    const missingVisibleSegments = visibleSegments.filter((segment) => !hasSegment(nextScaleKey, segment));
+    const missingFullSegments = fullRenderSegments().filter((segment) => !hasSegment(nextScaleKey, segment));
+    if (missingFullSegments.length === 0) {
+      recomputeRenderReadiness(nextScaleKey);
       return;
     }
 
     const token = ++renderToken;
     isReady = false;
     fullQualityReady = false;
-    debugTimeline.log('render-start', `Render page ${layout.pageIndex + 1} segments ${missingSegments.join(', ')} at scale ${nextScaleKey}`);
+    debugTimeline.log(
+      'render-start',
+      `Render page ${layout.pageIndex + 1} visible=${missingVisibleSegments.join(', ') || 'none'} remaining=${missingFullSegments.join(', ')} at scale ${nextScaleKey}`
+    );
 
     try {
-      for (const segment of missingSegments) {
+      for (const segment of missingVisibleSegments) {
+        const targetCanvas = canvasForSegment(segment);
+        if (!targetCanvas) {
+          break;
+        }
+
         await renderPdfPage({
-          canvas,
+          canvas: targetCanvas,
           page: layout.page,
           file,
           scale: layout.scale,
-          segment
+          segment,
+          segmentCanvas: true
         });
 
         if (token !== renderToken) {
@@ -563,7 +619,7 @@
 
       if (token === renderToken) {
         recomputeRenderReadiness(nextScaleKey);
-        debugTimeline.log('render-end', `Rendered page ${layout.pageIndex + 1}`);
+        debugTimeline.log('render-end', `Rendered visible segments for page ${layout.pageIndex + 1}`);
 
         // Eagerly render remaining off-screen segments, ordered by proximity
         // to the visible area so the next-to-scroll-into segment finishes first.
@@ -575,13 +631,26 @@
         if (hasBottom && !hasTop) segmentOrder.reverse();
         const remaining = segmentOrder.filter((segment) => !hasSegment(nextScaleKey, segment));
         for (const segment of remaining) {
-          if (token !== renderToken || !canvas || !file) break;
+          const targetCanvas = canvasForSegment(segment);
+          if (token !== renderToken || !targetCanvas || !file) break;
           try {
-            await renderPdfPage({ canvas, page: layout.page, file, scale: layout.scale, segment });
+            await renderPdfPage({
+              canvas: targetCanvas,
+              page: layout.page,
+              file,
+              scale: layout.scale,
+              segment,
+              segmentCanvas: true
+            });
             if (token !== renderToken) break;
             renderedSegments = new Set(renderedSegments).add(segmentKey(nextScaleKey, segment));
             recomputeRenderReadiness(nextScaleKey);
           } catch { break; }
+        }
+
+        if (token === renderToken) {
+          recomputeRenderReadiness(nextScaleKey);
+          debugTimeline.log('render-end', `Rendered full page ${layout.pageIndex + 1}`);
         }
       }
     } catch (error) {
@@ -1571,9 +1640,7 @@
     interactionLayer?.removeEventListener('touchmove', handleStylusTouch);
     interactionLayer?.removeEventListener('touchend', handleStylusTouch);
     interactionLayer?.removeEventListener('touchcancel', handleStylusTouch);
-    if (canvas) {
-      cancelCanvasRender(canvas);
-    }
+    cancelSegmentRenders();
     setInkSession(false);
     renderToken += 1;
     if (previewDeferTimer) { clearTimeout(previewDeferTimer); previewDeferTimer = null; }
@@ -1601,9 +1668,9 @@
   $: if (layout.page.kind === 'pdf') {
     if (!allowRender && !renderSuspended) {
       renderSuspended = true;
-      if (canvas) {
+      if (topCanvas || middleCanvas || bottomCanvas) {
         renderToken += 1;
-        cancelCanvasRender(canvas);
+        cancelSegmentRenders();
       }
     } else if (allowRender && renderSuspended) {
       renderSuspended = false;
@@ -1618,13 +1685,16 @@
   // All connection speeds get full-res PDF.js rendering. On slow/medium,
   // the per-page PDF endpoint provides a self-contained ~100-500KB file
   // that downloads in one request. No dwell delay needed.
-  $: if (canvas && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
+  $: if (topCanvas && middleCanvas && bottomCanvas && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
     scheduleRender(
       layout.page.id,
       layout.pageIndex,
       activePageIndex,
       () => renderPdfIfNeeded(),
-      () => { renderToken++; }
+      () => {
+        renderToken++;
+        cancelSegmentRenders();
+      }
     );
   }
 
@@ -1710,7 +1780,24 @@
           src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
         />
       {/if}
-      <canvas bind:this={canvas} class:ready={isReady} class="reader-pdf-canvas"></canvas>
+      <canvas
+        bind:this={topCanvas}
+        class:ready={segmentReady('top')}
+        class="reader-pdf-canvas reader-pdf-canvas-top"
+        style={segmentCanvasStyle('top')}
+      ></canvas>
+      <canvas
+        bind:this={middleCanvas}
+        class:ready={segmentReady('middle')}
+        class="reader-pdf-canvas reader-pdf-canvas-middle"
+        style={segmentCanvasStyle('middle')}
+      ></canvas>
+      <canvas
+        bind:this={bottomCanvas}
+        class:ready={segmentReady('bottom')}
+        class="reader-pdf-canvas reader-pdf-canvas-bottom"
+        style={segmentCanvasStyle('bottom')}
+      ></canvas>
     {:else}
       <div class={`reader-template-layer ${templateClass(layout.page)}`}></div>
     {/if}

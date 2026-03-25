@@ -1613,9 +1613,11 @@ img {
 /* PDF canvas renders on top of the preview image (z-index stacking) */
 .reader-pdf-canvas {
   position: absolute;
-  inset: 0;
+  left: 0;
+  width: 100%;
   z-index: 2;
   opacity: 0;
+  transition: opacity 120ms ease;
 }
 
 /* Low-res preview shown while full PDF canvas renders; fades out when canvas is ready */

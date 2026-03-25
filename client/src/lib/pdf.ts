@@ -291,8 +291,9 @@ export async function renderPdfPage(params: {
   file: FileRecord;
   scale: number;
   segment?: PdfRenderSegment;
+  segmentCanvas?: boolean;
 }): Promise<void> {
-  const { canvas, page, file, scale, segment = 'full' } = params;
+  const { canvas, page, file, scale, segment = 'full', segmentCanvas = false } = params;
   const { coarsePointer, devicePixelRatio, viewportWidth } = currentEnvironment();
   const deviceScale = resolvePdfDeviceScale({
     devicePixelRatio,
@@ -305,6 +306,7 @@ export async function renderPdfPage(params: {
   const targetWidth = Math.max(1, Math.floor(page.width * scale * deviceScale));
   const targetHeight = Math.max(1, Math.floor(page.height * scale * deviceScale));
   const { height: segmentHeight, top: segmentTop } = segmentBounds(targetHeight, segment);
+  const segmentCssHeight = Math.max(1, Math.floor((segmentHeight / targetHeight) * cssHeight));
   const cacheKey = renderSegmentKey(file, page, targetWidth, targetHeight, segment, segmentTop, segmentHeight);
   const cachedSurface = touchCacheEntry(cacheKey);
   if (cachedSurface) {
@@ -312,14 +314,14 @@ export async function renderPdfPage(params: {
     const context = ensureCanvasSize({
       canvas,
       targetWidth,
-      targetHeight,
+      targetHeight: segmentCanvas ? segmentHeight : targetHeight,
       cssWidth,
-      cssHeight
+      cssHeight: segmentCanvas ? segmentCssHeight : cssHeight
     });
     if (!context) {
       return;
     }
-    context.drawImage(cachedSurface, 0, segmentTop);
+    context.drawImage(cachedSurface, 0, segmentCanvas ? 0 : segmentTop);
     return;
   }
 
@@ -349,9 +351,9 @@ export async function renderPdfPage(params: {
   const targetContext = ensureCanvasSize({
     canvas,
     targetWidth,
-    targetHeight,
+    targetHeight: segmentCanvas ? segmentHeight : targetHeight,
     cssWidth,
-    cssHeight
+    cssHeight: segmentCanvas ? segmentCssHeight : cssHeight
   });
   if (!targetContext) {
     return;
@@ -374,7 +376,7 @@ export async function renderPdfPage(params: {
       cached = surface;
     }
     storeRenderSurface(cacheKey, cached, coarsePointer);
-    targetContext.drawImage(cached, 0, segmentTop);
+    targetContext.drawImage(cached, 0, segmentCanvas ? 0 : segmentTop);
   } finally {
     if (canvasTasks.get(canvas) === task) {
       canvasTasks.delete(canvas);
