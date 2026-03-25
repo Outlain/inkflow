@@ -27,7 +27,7 @@ import type {
   SearchResult
 } from '../../../shared/src/contracts.js';
 import { getDb } from '../db/database.js';
-import { getDefaultUser } from './activityService.js';
+import { getDefaultUser, repairDocumentChaptersAfterPageDelete } from './activityService.js';
 
 // ── SQLite row interfaces (snake_case DB columns -> camelCase via mappers) ──
 
@@ -807,6 +807,7 @@ export function deletePage(pageId: string): DocumentBundle {
       throw new Error('A document must keep at least one page.');
     }
 
+    repairDocumentChaptersAfterPageDelete(page.document_id, pageId);
     db.prepare('DELETE FROM pages WHERE id = ?').run(pageId);
     db.prepare('DELETE FROM page_search_fts WHERE page_id = ?').run(pageId);
 

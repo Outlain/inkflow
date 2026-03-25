@@ -5,6 +5,7 @@
  */
 
 import { nanoid } from 'nanoid';
+import type Database from 'better-sqlite3';
 import type {
   ActivityConfigPayload,
   ActivityDaySummary,
@@ -95,9 +96,15 @@ interface ChapterRow {
   title: string;
   start_page_index: number;
   end_page_index: number;
+  start_page_id: string | null;
+  end_page_id: string | null;
   position: number;
   color: string | null;
   created_at: string;
+}
+
+interface PageOrderRow {
+  id: string;
 }
 
 interface ConfigRow {
@@ -175,6 +182,121 @@ function mapChapter(row: ChapterRow): DocumentChapter {
     color: row.color,
     createdAt: row.created_at
   };
+}
+
+function orderedDocumentPages(db: Database.Database, documentId: string): PageOrderRow[] {
+  return db.prepare('SELECT id FROM pages WHERE document_id = ? ORDER BY position ASC').all(documentId) as PageOrderRow[];
+}
+
+function pageIndexMap(rows: PageOrderRow[]): Map<string, number> {
+  return new Map(rows.map((row, index) => [row.id, index]));
+}
+
+function resolveChapterRange(row: ChapterRow, pageIndexes: Map<string, number>): { startPageIndex: number; endPageIndex: number } | null {
+  const startPageIndex = row.start_page_id ? pageIndexes.get(row.start_page_id) : undefined;
+  const endPageIndex = row.end_page_id ? pageIndexes.get(row.end_page_id) : undefined;
+
+  if (startPageIndex == null || endPageIndex == null) {
+    return null;
+  }
+
+  return {
+    startPageIndex: Math.min(startPageIndex, endPageIndex),
+    endPageIndex: Math.max(startPageIndex, endPageIndex)
+  };
+}
+
+function mapResolvedChapter(row: ChapterRow, pageIndexes: Map<string, number>): DocumentChapter | null {
+  const range = resolveChapterRange(row, pageIndexes);
+  if (!range) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    documentId: row.document_id,
+    title: row.title,
+    startPageIndex: range.startPageIndex,
+    endPageIndex: range.endPageIndex,
+    position: row.position,
+    color: row.color,
+    createdAt: row.created_at
+  };
+}
+
+function chapterRowsForDocument(db: Database.Database, documentId: string): ChapterRow[] {
+  return db.prepare('SELECT * FROM document_chapters WHERE document_id = ? ORDER BY position').all(documentId) as ChapterRow[];
+}
+
+function pageIdAtIndex(db: Database.Database, documentId: string, pageIndex: number): string {
+  const pages = orderedDocumentPages(db, documentId);
+  const page = pages[pageIndex];
+  if (!page) {
+    throw new Error('Chapter page range is out of bounds.');
+  }
+
+  return page.id;
+}
+
+function syncLegacyChapterIndexes(db: Database.Database, documentId: string): void {
+  const pages = orderedDocumentPages(db, documentId);
+  const indexes = pageIndexMap(pages);
+  const update = db.prepare('UPDATE document_chapters SET start_page_index = ?, end_page_index = ? WHERE id = ?');
+
+  for (const row of chapterRowsForDocument(db, documentId)) {
+    const range = resolveChapterRange(row, indexes);
+    if (!range) {
+      continue;
+    }
+
+    update.run(range.startPageIndex, range.endPageIndex, row.id);
+  }
+}
+
+export function repairDocumentChaptersAfterPageDelete(documentId: string, deletedPageId: string): void {
+  const db = getDb();
+  const beforeDelete = orderedDocumentPages(db, documentId);
+  const deletedIndex = beforeDelete.findIndex((page) => page.id === deletedPageId);
+  if (deletedIndex === -1) {
+    return;
+  }
+
+  const remainingPages = beforeDelete.filter((page) => page.id !== deletedPageId);
+  const chapters = chapterRowsForDocument(db, documentId);
+  const update = db.prepare('UPDATE document_chapters SET start_page_id = ?, end_page_id = ? WHERE id = ?');
+  const remove = db.prepare('DELETE FROM document_chapters WHERE id = ?');
+
+  for (const row of chapters) {
+    const startIndex = row.start_page_id ? beforeDelete.findIndex((page) => page.id === row.start_page_id) : -1;
+    const endIndex = row.end_page_id ? beforeDelete.findIndex((page) => page.id === row.end_page_id) : -1;
+    if (startIndex === -1 || endIndex === -1) {
+      continue;
+    }
+
+    const low = Math.min(startIndex, endIndex);
+    const high = Math.max(startIndex, endIndex);
+    const surviving = remainingPages.filter((page) => {
+      const originalIndex = beforeDelete.findIndex((candidate) => candidate.id === page.id);
+      return originalIndex >= low && originalIndex <= high;
+    });
+
+    if (surviving.length === 0) {
+      remove.run(row.id);
+      continue;
+    }
+
+    const nextStartId = row.start_page_id === deletedPageId ? surviving[0].id : row.start_page_id;
+    const nextEndId = row.end_page_id === deletedPageId ? surviving[surviving.length - 1].id : row.end_page_id;
+    update.run(nextStartId, nextEndId, row.id);
+  }
+
+  syncLegacyChapterIndexes(db, documentId);
+}
+
+export function deleteAllDocumentChapters(documentId: string): number {
+  const db = getDb();
+  const result = db.prepare('DELETE FROM document_chapters WHERE document_id = ?').run(documentId);
+  return result.changes;
 }
 
 // ── User management ──
@@ -686,15 +808,13 @@ export function getDocumentActivitySummary(userId: string, documentId: string): 
   `).all(documentId) as Array<{ page_index: number; page_id: string | null; dwell_secs: number }>;
 
   // Per-chapter time
-  const chapters = db.prepare(`
-    SELECT * FROM document_chapters WHERE document_id = ? ORDER BY position
-  `).all(documentId) as ChapterRow[];
+  const chapters = getDocumentChapters(documentId);
 
-  const chapterTime = chapters.map(ch => {
+  const chapterTime = chapters.map((ch) => {
     const time = db.prepare(`
       SELECT COALESCE(SUM(dwell_secs), 0) as total FROM page_visits
       WHERE document_id = ? AND page_index >= ? AND page_index <= ?
-    `).get(documentId, ch.start_page_index, ch.end_page_index) as { total: number };
+    `).get(documentId, ch.startPageIndex, ch.endPageIndex) as { total: number };
 
     return {
       chapterId: ch.id,
@@ -802,8 +922,13 @@ export async function fireWebhook(session: ActivitySessionRecord): Promise<void>
 
 export function getDocumentChapters(documentId: string): DocumentChapter[] {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM document_chapters WHERE document_id = ? ORDER BY position').all(documentId) as ChapterRow[];
-  return rows.map(mapChapter);
+  syncLegacyChapterIndexes(db, documentId);
+  const rows = chapterRowsForDocument(db, documentId);
+  const indexes = pageIndexMap(orderedDocumentPages(db, documentId));
+  return rows
+    .map((row) => mapResolvedChapter(row, indexes))
+    .filter((chapter): chapter is DocumentChapter => Boolean(chapter))
+    .sort((left, right) => left.startPageIndex - right.startPageIndex || left.position - right.position);
 }
 
 export function createChapter(documentId: string, input: {
@@ -813,18 +938,27 @@ export function createChapter(documentId: string, input: {
   color?: string;
 }): DocumentChapter {
   const db = getDb();
+  if (input.endPageIndex < input.startPageIndex) {
+    throw new Error('Chapter end page must be after start page.');
+  }
+
   const id = nanoid();
   const timestamp = now();
+  const startPageId = pageIdAtIndex(db, documentId, input.startPageIndex);
+  const endPageId = pageIdAtIndex(db, documentId, input.endPageIndex);
 
   // Position: after the last chapter
   const last = db.prepare('SELECT MAX(position) as max_pos FROM document_chapters WHERE document_id = ?').get(documentId) as { max_pos: number | null };
   const position = (last.max_pos ?? 0) + 1024;
 
   db.prepare(`
-    INSERT INTO document_chapters (id, document_id, title, start_page_index, end_page_index, position, color, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, documentId, input.title, input.startPageIndex, input.endPageIndex, position, input.color ?? null, timestamp);
+    INSERT INTO document_chapters (
+      id, document_id, title, start_page_index, end_page_index, start_page_id, end_page_id, position, color, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, documentId, input.title, input.startPageIndex, input.endPageIndex, startPageId, endPageId, position, input.color ?? null, timestamp);
 
+  syncLegacyChapterIndexes(db, documentId);
   return getChapterById(id)!;
 }
 
@@ -838,9 +972,22 @@ export function updateChapter(chapterId: string, updates: {
   const existing = getChapterById(chapterId);
   if (!existing) return null;
 
+  const nextStartPageIndex = updates.startPageIndex ?? existing.startPageIndex;
+  const nextEndPageIndex = updates.endPageIndex ?? existing.endPageIndex;
+  if (nextEndPageIndex < nextStartPageIndex) {
+    throw new Error('Chapter end page must be after start page.');
+  }
+  const startPageId = pageIdAtIndex(db, existing.documentId, nextStartPageIndex);
+  const endPageId = pageIdAtIndex(db, existing.documentId, nextEndPageIndex);
+
   if (updates.title != null) db.prepare('UPDATE document_chapters SET title = ? WHERE id = ?').run(updates.title, chapterId);
-  if (updates.startPageIndex != null) db.prepare('UPDATE document_chapters SET start_page_index = ? WHERE id = ?').run(updates.startPageIndex, chapterId);
-  if (updates.endPageIndex != null) db.prepare('UPDATE document_chapters SET end_page_index = ? WHERE id = ?').run(updates.endPageIndex, chapterId);
+  db.prepare('UPDATE document_chapters SET start_page_index = ?, end_page_index = ?, start_page_id = ?, end_page_id = ? WHERE id = ?').run(
+    nextStartPageIndex,
+    nextEndPageIndex,
+    startPageId,
+    endPageId,
+    chapterId
+  );
   if (updates.color !== undefined) db.prepare('UPDATE document_chapters SET color = ? WHERE id = ?').run(updates.color ?? null, chapterId);
 
   return getChapterById(chapterId);
@@ -855,5 +1002,10 @@ export function deleteChapter(chapterId: string): boolean {
 function getChapterById(id: string): DocumentChapter | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM document_chapters WHERE id = ?').get(id) as ChapterRow | undefined;
-  return row ? mapChapter(row) : null;
+  if (!row) {
+    return null;
+  }
+
+  const indexes = pageIndexMap(orderedDocumentPages(db, row.document_id));
+  return mapResolvedChapter(row, indexes);
 }

@@ -1,9 +1,10 @@
 <script lang="ts">
   // Chapter management panel — add/edit/delete individual chapters or bulk-import
   // from pasted text. Tracks which chapter the active page falls in.
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
   import type { DocumentChapter } from '@shared/contracts';
-  import { fetchChapters, createChapter, updateChapter, deleteChapter } from '../activity';
+  import { fetchChapters, createChapter, updateChapter, deleteChapter, deleteAllChapters } from '../activity';
+  import { parseBulkChapterText, resolveBulkChapterEndPages } from '../chapterBulk';
 
   export let documentId: string;
   export let pageCount: number;
@@ -26,6 +27,7 @@
   let showBulkForm = false;
   let bulkText = '';
   let bulkError = '';
+  let bulkWarning = '';
   let bulkPreview: Array<{ title: string; start: number; end: number }> = [];
 
   // Edit state
@@ -33,17 +35,30 @@
   let editTitle = '';
   let editStartPage = 1;
   let editEndPage = 1;
+  let loadedDocumentId = '';
+  let loadedPageCount = -1;
 
-  onMount(async () => {
+  async function loadChapters(force = false): Promise<void> {
+    if (!force && loadedDocumentId === documentId && loadedPageCount === pageCount) {
+      return;
+    }
+
+    loading = true;
     try {
       chapters = await fetchChapters(documentId);
+      loadedDocumentId = documentId;
+      loadedPageCount = pageCount;
       dispatch('changed', { chapters });
     } catch {
       // No chapters or API error
     } finally {
       loading = false;
     }
-  });
+  }
+
+  $: if (documentId) {
+    void loadChapters();
+  }
 
   // Reactive: current chapter based on active page
   // Reference both `chapters` and `activePageIndex` directly so Svelte tracks them
@@ -94,104 +109,32 @@
   function openBulkForm(): void {
     bulkText = '';
     bulkError = '';
+    bulkWarning = '';
     bulkPreview = [];
     showBulkForm = true;
     showAddForm = false;
   }
 
-  /**
-   * Parses bulk chapter text. Supported formats:
-   *
-   * Format A — page number then title:
-   *   1 Introduction
-   *   16 Literature Review
-   *   45 Methodology
-   *
-   * Format B — explicit range then title:
-   *   1-15 Introduction
-   *   16-44 Literature Review
-   *
-   * Format C — title then page (with separator):
-   *   Introduction, 1
-   *   Literature Review, 16
-   *   Methodology, 45-78
-   *
-   * When no end page is given, each chapter runs until the next chapter starts.
-   * The last chapter extends to the end of the document.
-   */
-  function parseBulkText(text: string): Array<{ title: string; start: number; end: number | null }> {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    if (lines.length === 0) return [];
-
-    const results: Array<{ title: string; start: number; end: number | null }> = [];
-
-    for (const line of lines) {
-      let parsed = false;
-
-      // Format A/B: leading page or range, then title
-      // "1 Introduction" or "1-15 Introduction" or "1. Introduction"
-      const leadingMatch = line.match(/^(\d+)(?:\s*[-–]\s*(\d+))?\s*[.:\-–)]\s*(.+)$/);
-      if (leadingMatch) {
-        const start = parseInt(leadingMatch[1], 10);
-        const end = leadingMatch[2] ? parseInt(leadingMatch[2], 10) : null;
-        const title = leadingMatch[3].trim();
-        if (title && start >= 1 && start <= pageCount) {
-          results.push({ title, start, end: end && end >= start && end <= pageCount ? end : null });
-          parsed = true;
-        }
-      }
-
-      if (!parsed) {
-        // Also try without separator: "1 Introduction" (just number space text)
-        const simpleMatch = line.match(/^(\d+)\s+(.+)$/);
-        if (simpleMatch) {
-          const start = parseInt(simpleMatch[1], 10);
-          const title = simpleMatch[2].trim();
-          if (title && start >= 1 && start <= pageCount) {
-            results.push({ title, start, end: null });
-            parsed = true;
-          }
-        }
-      }
-
-      if (!parsed) {
-        // Format C: title then page — "Introduction, 1" or "Introduction, 1-15"
-        const trailingMatch = line.match(/^(.+?)[,;:\t]\s*(\d+)(?:\s*[-–]\s*(\d+))?\s*$/);
-        if (trailingMatch) {
-          const title = trailingMatch[1].trim();
-          const start = parseInt(trailingMatch[2], 10);
-          const end = trailingMatch[3] ? parseInt(trailingMatch[3], 10) : null;
-          if (title && start >= 1 && start <= pageCount) {
-            results.push({ title, start, end: end && end >= start && end <= pageCount ? end : null });
-            parsed = true;
-          }
-        }
-      }
-
-    }
-
-    return results;
-  }
-
-  function resolveBulkEndPages(entries: Array<{ title: string; start: number; end: number | null }>): Array<{ title: string; start: number; end: number }> {
-    const sorted = [...entries].sort((a, b) => a.start - b.start);
-    return sorted.map((entry, i) => {
-      if (entry.end != null) return { title: entry.title, start: entry.start, end: entry.end };
-      const nextStart = sorted[i + 1]?.start;
-      const end = nextStart ? nextStart - 1 : pageCount;
-      return { title: entry.title, start: entry.start, end: Math.max(entry.start, end) };
-    });
+  function bulkEntryKey(entry: { title: string; start: number; end: number | null }): string {
+    return `${entry.title}::${entry.start}::${entry.end ?? 'auto'}`;
   }
 
   function updateBulkPreview(): void {
-    const parsed = parseBulkText(bulkText);
+    const parsed = parseBulkChapterText(bulkText, pageCount);
     if (parsed.length === 0 && bulkText.trim().length > 0) {
       bulkError = 'Could not parse any chapters. Check the format.';
+      bulkWarning = '';
       bulkPreview = [];
       return;
     }
     bulkError = '';
-    bulkPreview = resolveBulkEndPages(parsed);
+    const sortedKeys = [...parsed].sort((a, b) => a.start - b.start || a.title.localeCompare(b.title)).map(bulkEntryKey);
+    const originalKeys = parsed.map(bulkEntryKey);
+    bulkWarning =
+      parsed.length > 1 && sortedKeys.some((key, index) => key !== originalKeys[index])
+        ? 'These entries were reordered by page number in the preview. Check any rows that look out of sequence, such as Preface appearing after Chapter 1.'
+        : '';
+    bulkPreview = resolveBulkChapterEndPages(parsed, pageCount);
   }
 
   $: if (showBulkForm) updateBulkPreview();
@@ -219,6 +162,7 @@
       chapters = [...chapters, ...created].sort((a, b) => a.startPageIndex - b.startPageIndex);
       showBulkForm = false;
       bulkText = '';
+      bulkWarning = '';
       bulkPreview = [];
       dispatch('changed', { chapters });
     } catch (err) {
@@ -280,12 +224,32 @@
       busy = false;
     }
   }
+
+  async function removeAllChapters(): Promise<void> {
+    if (chapters.length === 0 || !window.confirm(`Delete all ${chapters.length} chapters?`)) return;
+
+    busy = true;
+    bulkError = '';
+    try {
+      await deleteAllChapters(documentId);
+      chapters = [];
+      editingId = null;
+      dispatch('changed', { chapters });
+    } catch (err) {
+      bulkError = err instanceof Error ? err.message : 'Could not delete chapters.';
+    } finally {
+      busy = false;
+    }
+  }
 </script>
 
 <div class="chapter-manager">
   <div class="chapter-header">
     <h3>Chapters</h3>
     <div class="chapter-header-actions">
+      {#if chapters.length > 0}
+        <button class="button subtle danger" type="button" disabled={busy} on:click={removeAllChapters}>Clear</button>
+      {/if}
       <button class="button subtle" type="button" disabled={busy} on:click={openBulkForm}>Bulk</button>
       <button class="button subtle" type="button" disabled={busy} on:click={openAddForm}>Add</button>
     </div>
@@ -369,17 +333,20 @@
         Paste a chapter list. Accepted formats:
       </p>
       <div class="chapter-bulk-formats">
+        <code>1 Functions and Models, 42</code>
+        <code>Functions and Models, 42</code>
         <code>1 Introduction</code>
         <code>1-15 Introduction</code>
-        <code>Introduction, 1</code>
+        <code>Introduction, 1-15</code>
       </div>
       <p class="chapter-bulk-hint">
-        One chapter per line. If no end page is given, each chapter runs until the next.
+        One chapter per line. The last number on a comma-separated line is treated as the page, so chapter numbers in the title are safe.
+        If no end page is given, each chapter runs until the next.
       </p>
       <textarea
         class="chapter-bulk-textarea"
         bind:value={bulkText}
-        placeholder={"1 Introduction\n16 Literature Review\n45 Methodology\n78 Results\n112 Discussion\n130 Conclusion"}
+        placeholder={"1 Functions and Models, 42\n2 Limits and Derivatives, 112\n3 Differentiation Rules, 208\nAppendices, 1159"}
         rows="8"
       ></textarea>
 
@@ -395,11 +362,15 @@
         </div>
       {/if}
 
+      {#if bulkWarning}
+        <p class="chapter-warning">{bulkWarning}</p>
+      {/if}
+
       {#if bulkError}
         <p class="chapter-error">{bulkError}</p>
       {/if}
       <div class="chapter-form-actions">
-        <button class="button subtle" type="button" on:click={() => { showBulkForm = false; bulkText = ''; bulkPreview = []; }}>Cancel</button>
+        <button class="button subtle" type="button" on:click={() => { showBulkForm = false; bulkText = ''; bulkWarning = ''; bulkPreview = []; }}>Cancel</button>
         <button class="button primary" type="button" disabled={busy || bulkPreview.length === 0} on:click={submitBulk}>
           {busy ? 'Importing...' : `Import ${bulkPreview.length} Chapter${bulkPreview.length === 1 ? '' : 's'}`}
         </button>
@@ -602,6 +573,17 @@
     margin: 0;
     font-size: 0.8rem;
     color: var(--ink-danger);
+  }
+
+  .chapter-warning {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #8a5d17;
+    background: rgba(212, 173, 89, 0.14);
+    border: 1px solid rgba(212, 173, 89, 0.24);
+    border-radius: 8px;
+    padding: 8px 10px;
+    line-height: 1.4;
   }
 
   /* Bulk import */

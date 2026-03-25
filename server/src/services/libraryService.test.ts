@@ -106,4 +106,42 @@ describe('libraryService ordering and save behavior', () => {
       })
     ).toThrow(/conflict/i);
   });
+
+  it('keeps chapters aligned to their content when pages are inserted and deleted', async () => {
+    const library = await import('./libraryService.js');
+    const activity = await import('./activityService.js');
+    const created = library.createNotebook({
+      title: 'Chapter notebook',
+      template: 'ruled',
+      pageCount: 4,
+      folderId: null,
+      coverColor: '#315f85'
+    });
+
+    const chapter = activity.createChapter(created.document.id, {
+      title: 'Middle chapter',
+      startPageIndex: 1,
+      endPageIndex: 2
+    });
+    expect(chapter.startPageIndex).toBe(1);
+    expect(chapter.endPageIndex).toBe(2);
+
+    const inserted = library.insertBlankPage(created.document.id, {
+      anchorPageId: created.pages[0].id,
+      placement: 'before',
+      template: 'grid'
+    });
+
+    const afterInsert = activity.getDocumentChapters(created.document.id);
+    expect(afterInsert).toHaveLength(1);
+    expect(afterInsert[0].startPageIndex).toBe(2);
+    expect(afterInsert[0].endPageIndex).toBe(3);
+
+    const deleted = library.deletePage(inserted.pages[2].id);
+    const afterDelete = activity.getDocumentChapters(created.document.id);
+    expect(deleted.document.pageCount).toBe(4);
+    expect(afterDelete).toHaveLength(1);
+    expect(afterDelete[0].startPageIndex).toBe(2);
+    expect(afterDelete[0].endPageIndex).toBe(2);
+  });
 });

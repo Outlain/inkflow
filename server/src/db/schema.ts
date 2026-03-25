@@ -158,6 +158,8 @@ export const schemaSql = `
     title TEXT NOT NULL,
     start_page_index INTEGER NOT NULL,
     end_page_index INTEGER NOT NULL,
+    start_page_id TEXT REFERENCES pages(id) ON DELETE SET NULL,
+    end_page_id TEXT REFERENCES pages(id) ON DELETE SET NULL,
     position REAL NOT NULL,
     color TEXT,
     created_at TEXT NOT NULL
@@ -172,4 +174,4 @@ export const schemaSql = `
   );
 `;
 
-export const schemaVersion = '3';
+export const schemaVersion = '4';

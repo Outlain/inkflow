@@ -11,7 +11,7 @@
   import UserSetupModal from './UserSetupModal.svelte';
   import { isLowDataMode, setLowDataMode, getConnectionQuality } from '../networkMonitor';
 
-  const dispatch = createEventDispatcher<{ openDocument: { documentId: string } }>();
+  const dispatch = createEventDispatcher<{ openDocument: { documentId: string }; toggleBrowserSafeTopbar: { enabled: boolean } }>();
 
   type ModalKind = 'folder' | 'notebook' | null;
 
@@ -21,6 +21,7 @@
   // ── Component state ──
 
   let library: LibraryPayload = { folders: [], documents: [] };
+  export let browserSafeTopbar = true;
   let loading = true;
   let busy = false;
   let uploading = false;
@@ -378,7 +379,19 @@
         >
           {lowDataMode ? 'Low Data Mode: ON' : 'Low Data Mode: OFF'}
         </button>
+        <button
+          class="button subtle"
+          class:active={browserSafeTopbar}
+          type="button"
+          on:click={() => {
+            browserSafeTopbar = !browserSafeTopbar;
+            dispatch('toggleBrowserSafeTopbar', { enabled: browserSafeTopbar });
+          }}
+        >
+          {browserSafeTopbar ? 'Browser Safe Top Bar: ON' : 'Browser Safe Top Bar: OFF'}
+        </button>
       </div>
+      <p class="chapter-hint">Keep this on for Chrome/iPad browser bars. Turn it off for Safari or home-screen mode if you want the pencil bar flush to the top.</p>
     </section>
 
     {#if errorMessage}

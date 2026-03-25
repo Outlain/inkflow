@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   createChapter,
+  deleteAllDocumentChapters,
   deleteChapter,
   endSession,
   ensureDefaultUserFromEnv,
@@ -77,6 +78,9 @@ const createChapterSchema = z.object({
   startPageIndex: z.number().int().min(0),
   endPageIndex: z.number().int().min(0),
   color: z.string().optional()
+}).refine((value) => value.endPageIndex >= value.startPageIndex, {
+  message: 'End page must be after start page.',
+  path: ['endPageIndex']
 });
 
 const updateChapterSchema = z.object({
@@ -84,6 +88,9 @@ const updateChapterSchema = z.object({
   startPageIndex: z.number().int().min(0).optional(),
   endPageIndex: z.number().int().min(0).optional(),
   color: z.string().nullable().optional()
+}).refine((value) => value.startPageIndex == null || value.endPageIndex == null || value.endPageIndex >= value.startPageIndex, {
+  message: 'End page must be after start page.',
+  path: ['endPageIndex']
 });
 
 const exportQuerySchema = z.object({
@@ -241,5 +248,12 @@ export async function registerActivityRoutes(app: FastifyInstance): Promise<void
       return reply.status(404).send({ error: 'Chapter not found' });
     }
     return reply.send({ ok: true });
+  });
+
+  app.delete('/documents/:documentId/chapters', async (request, reply) => {
+    requireUser();
+    const { documentId } = request.params as { documentId: string };
+    const deleted = deleteAllDocumentChapters(documentId);
+    return reply.send({ ok: true, deleted });
   });
 }

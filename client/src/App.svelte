@@ -9,8 +9,10 @@
   import { getAppSession, getStudySession, initTabCoordination } from './lib/activity';
   import { initNetworkMonitor } from './lib/networkMonitor';
   import NetworkToast from './lib/components/NetworkToast.svelte';
+  import { loadReaderBrowserSafeTopbar, saveReaderBrowserSafeTopbar } from './lib/readerChromeMode';
 
   let route: AppRoute = { name: 'library' };
+  let readerBrowserSafeTopbar = true;
   const appSessionManager = getAppSession();
   const studySessionManager = getStudySession();
 
@@ -41,6 +43,7 @@
   }
 
   onMount(() => {
+    readerBrowserSafeTopbar = loadReaderBrowserSafeTopbar();
     syncRoute();
     window.addEventListener('popstate', syncRoute);
 
@@ -71,9 +74,16 @@
 </script>
 
 {#if route.name === 'document'}
-  <ReaderView documentId={route.documentId} on:close={closeDocument} />
+  <ReaderView browserSafeTopbar={readerBrowserSafeTopbar} documentId={route.documentId} on:close={closeDocument} />
 {:else}
-  <LibraryView on:openDocument={(event) => openDocument(event.detail.documentId)} />
+  <LibraryView
+    browserSafeTopbar={readerBrowserSafeTopbar}
+    on:openDocument={(event) => openDocument(event.detail.documentId)}
+    on:toggleBrowserSafeTopbar={(event) => {
+      readerBrowserSafeTopbar = event.detail.enabled;
+      saveReaderBrowserSafeTopbar(readerBrowserSafeTopbar);
+    }}
+  />
 {/if}
 
 <NetworkToast />

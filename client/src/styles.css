@@ -19,6 +19,11 @@
   --ink-shadow: 0 18px 46px rgba(82, 70, 42, 0.12);
   --ink-danger: #a54b3c;
   --ink-dark-toolbar: rgba(48, 40, 35, 0.76);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --compact-browser-buffer: 0px;
 }
 
 * {
@@ -47,6 +52,7 @@ body.reader-route-active {
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background:
     radial-gradient(circle at top left, rgba(237, 230, 214, 0.95), transparent 35%),
     radial-gradient(circle at right 15%, rgba(226, 217, 198, 0.75), transparent 30%),
@@ -100,6 +106,7 @@ img {
 
 .screen-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 24px;
 }
 
@@ -526,11 +533,16 @@ img {
 .reader-screen {
   position: relative;
   height: 100vh;
-  padding: 0.5vh;
+  height: 100dvh;
+  padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 8px);
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   overflow: hidden;
+}
+
+.reader-screen.browser-safe-topbar {
+  --compact-browser-buffer: 52px;
 }
 
 .reader-screen.compact-mode {
@@ -570,9 +582,9 @@ img {
 /* Slide-down header overlay in compact mode */
 .reader-header.compact-header {
   position: absolute;
-  top: 16px;
-  left: 16px;
-  right: 16px;
+  top: max(calc(var(--safe-top) + 12px), var(--compact-browser-buffer));
+  left: calc(var(--safe-left) + 16px);
+  right: calc(var(--safe-right) + 16px);
   z-index: 8;
   gap: 0;
   padding: 14px 16px;
@@ -872,7 +884,7 @@ img {
 
 .reader-middle-bar {
   position: absolute;
-  top: 18px;
+  top: calc(var(--safe-top) + 18px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 7;
@@ -894,7 +906,7 @@ img {
 }
 
 .reader-screen.compact-mode.compact-header-open .reader-middle-bar {
-  top: 104px;
+  top: max(calc(var(--safe-top) + 104px), calc(var(--compact-browser-buffer) + 92px));
 }
 
 /* -- Strip (horizontal pill toolbar) -------------------------- */
@@ -1883,7 +1895,7 @@ img {
 @media (max-width: 1080px) {
   .screen-shell,
   .reader-screen {
-    padding: 16px;
+    padding: calc(var(--safe-top) + 16px) calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 16px);
   }
 
   .reader-center {
@@ -1909,22 +1921,22 @@ img {
   .inspector-rail {
     display: none;
     position: fixed;
-    top: 148px;
-    max-height: calc(100vh - 180px);
+    top: calc(var(--safe-top) + 148px);
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 180px);
     overflow: auto;
     z-index: 30;
   }
 
   .thumbnail-rail {
-    left: 16px;
+    left: calc(var(--safe-left) + 16px);
     right: auto;
-    width: min(318px, calc(100vw - 32px));
+    width: min(318px, calc(100vw - var(--safe-left) - var(--safe-right) - 32px));
   }
 
   .inspector-rail {
-    right: 16px;
+    right: calc(var(--safe-right) + 16px);
     left: auto;
-    width: min(360px, calc(100vw - 32px));
+    width: min(360px, calc(100vw - var(--safe-left) - var(--safe-right) - 32px));
   }
 
   .thumbnail-rail.compact-panel,
@@ -1933,7 +1945,7 @@ img {
   }
 
   .reader-middle-bar {
-    top: 12px;
+    top: max(calc(var(--safe-top) + 12px), calc(var(--compact-browser-buffer) + 6px));
     max-width: calc(100% - 20px);
   }
 
@@ -2020,7 +2032,7 @@ img {
     width: auto;
     max-width: 100%;
     padding: 0 4px;
-    top: 4px;
+    top: max(calc(var(--safe-top) + 4px), var(--compact-browser-buffer));
   }
 
   .middle-menu-strip {

@@ -70,6 +70,7 @@
   // ── Props ─────────────────────────────────────────────────────────────
 
   export let documentId: string;
+  export let browserSafeTopbar = true;
 
   // ── Interfaces ───────────────────────────────────────────────────────
 
@@ -2265,6 +2266,7 @@
 <!-- ═══ Reader Screen Root ═══ -->
 <div
   bind:this={readerScreen}
+  class:browser-safe-topbar={browserSafeTopbar}
   class:compact-header-open={compactMode && compactHeaderVisibleState}
   class:compact-mode={compactMode}
   class="reader-screen"

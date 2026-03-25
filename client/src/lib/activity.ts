@@ -200,6 +200,11 @@ export async function deleteChapter(chapterId: string): Promise<void> {
   await deleteReq(`/api/chapters/${chapterId}`);
 }
 
+export async function deleteAllChapters(documentId: string): Promise<number> {
+  const result = await deleteReq<{ ok: boolean; deleted: number }>(`/api/documents/${documentId}/chapters`);
+  return result.deleted;
+}
+
 // ── Platform Signal Detection ──
 
 interface PlatformSignals {
