@@ -5,8 +5,8 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import type { Annotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from '../../../shared/src/contracts.js';
+import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
+import type { Annotation, ShapeAnnotation, StrokeAnnotation, TapeAnnotation, TextAnnotation } from '../../../shared/src/contracts.js';
 import { config } from '../config.js';
 import { getUploadPath } from '../lib/fs.js';
 import { getDocumentBundle, getPageAnnotations } from './libraryService.js';
@@ -193,6 +193,36 @@ function drawShape(page: import('pdf-lib').PDFPage, annotation: ShapeAnnotation)
   });
 }
 
+/** Draws a tape strip as a semi-transparent rotated rectangle on the PDF page */
+function drawTape(page: import('pdf-lib').PDFPage, annotation: TapeAnnotation): void {
+  const pageHeight = page.getHeight();
+  const dx = annotation.x2 - annotation.x1;
+  const dy = annotation.y2 - annotation.y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  if (length < 0.5) return;
+
+  const hex = annotation.color.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16) / 255;
+  const g = parseInt(hex.substring(2, 4), 16) / 255;
+  const b = parseInt(hex.substring(4, 6), 16) / 255;
+
+  // Center of the tape strip, with Y flipped for PDF coordinate system
+  const cx = (annotation.x1 + annotation.x2) / 2;
+  const cy = (annotation.y1 + annotation.y2) / 2;
+  const angle = Math.atan2(dy, dx);
+
+  page.drawRectangle({
+    x: cx,
+    y: pageHeight - cy,
+    width: length,
+    height: annotation.tapeWidth,
+    color: rgb(r, g, b),
+    opacity: annotation.opacity,
+    rotate: degrees((-angle * 180) / Math.PI),
+    borderWidth: 0
+  });
+}
+
 function drawAnnotations(page: import('pdf-lib').PDFPage, annotations: Annotation[], font: import('pdf-lib').PDFFont): void {
   for (const annotation of annotations) {
     if (annotation.type === 'stroke') {
@@ -202,6 +232,11 @@ function drawAnnotations(page: import('pdf-lib').PDFPage, annotations: Annotatio
 
     if (annotation.type === 'text') {
       drawTextAnnotation(page, annotation, font);
+      continue;
+    }
+
+    if (annotation.type === 'tape') {
+      drawTape(page, annotation);
       continue;
     }
 

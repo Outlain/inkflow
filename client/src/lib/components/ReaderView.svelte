@@ -14,7 +14,8 @@
     SaveMode,
     SearchResponse,
     ShapeKind,
-    SyncEvent
+    SyncEvent,
+    TapePattern
   } from '@shared/contracts';
   import { getStudySession, logStudyEvent } from '../activity';
   import {
@@ -124,7 +125,7 @@
     arrowLeft: number;
   }
 
-  type ReaderToolPanel = 'lasso' | 'write' | 'text' | 'shape' | 'sticky' | 'accessories' | 'laser' | 'hand';
+  type ReaderToolPanel = 'lasso' | 'write' | 'text' | 'shape' | 'sticky' | 'tape' | 'accessories' | 'laser' | 'hand';
 
   // ── Constants ────────────────────────────────────────────────────────
 
@@ -149,6 +150,7 @@
     { id: 'text' as const, label: 'Text', glyph: 'T', accent: '#586f8d' },
     { id: 'shape' as const, label: 'Shapes', glyph: '▭', accent: '#7c5ca8' },
     { id: 'sticky' as const, label: 'Sticky', glyph: '▣', accent: '#f0d36d' },
+    { id: 'tape' as const, label: 'Tape', glyph: '▬', accent: '#e8b4b8' },
     { id: 'accessories' as const, label: 'Accessories', glyph: '◌', accent: '#69b8a6' },
     { id: 'laser' as const, label: 'Laser', glyph: '•', accent: '#f2615f' },
     { id: 'hand' as const, label: 'Hand', glyph: '✋', accent: '#3c7c66' }
@@ -172,6 +174,17 @@
   let lassoMode: 'rectangle' | 'freehand' = 'rectangle';
   let lassoSelectionCount = 0;
   let laserPointerMode: 'dot' | 'line' = 'dot';
+  let tapeColor = '#e8b4b8';
+  let tapePattern: TapePattern = 'solid';
+  let tapeWidth = 30;
+  let tapeStraightMode = true;
+  let tapeOpacity = 1.0;
+  /** Set of tape IDs currently revealed (transparent) for study peek — client-side only, not persisted */
+  let revealedTapeIds: Set<string> = new Set();
+  /** Set of tape IDs being temporarily peeked via hold gesture */
+  let peekingTapeIds: Set<string> = new Set();
+  /** Tape IDs that were already persistently revealed before a peek started — restored on peek-end */
+  let prePeekRevealedIds: Set<string> = new Set();
   let selectedAnnotationIdsByPage: Record<string, string[]> = {};
   let rulerVisible = false;
   let rulerOffsetY = 180;
@@ -527,7 +540,7 @@
   }
 
   function handleMiddleMenuItem(id: ReaderToolPanel | EditorTool, target: HTMLElement | null): void {
-    if (id === 'lasso' || id === 'sticky' || id === 'laser') {
+    if (id === 'lasso' || id === 'sticky' || id === 'tape' || id === 'laser') {
       selectedTool = id;
       activeToolPanel = activeToolPanel === id ? null : id;
       closeStrokePopover();
@@ -649,6 +662,69 @@
     if (current?.id === pageId) {
       lassoSelectionCount = annotationIds.length;
     }
+  }
+
+  /** Handle tape peek/reveal interactions from PageShell.
+   *  - toggle: flip persistent reveal state (tap)
+   *  - peek-start: temporarily reveal for hold gesture
+   *  - peek-end: end hold, revert to pre-peek state
+   */
+  function handleTapePeek(tapeId: string, action: 'toggle' | 'peek-start' | 'peek-end'): void {
+    if (action === 'toggle') {
+      const next = new Set(revealedTapeIds);
+      if (next.has(tapeId)) {
+        next.delete(tapeId);
+      } else {
+        next.add(tapeId);
+      }
+      revealedTapeIds = next;
+    } else if (action === 'peek-start') {
+      // Track whether this tape was already persistently revealed before the peek
+      if (revealedTapeIds.has(tapeId)) {
+        prePeekRevealedIds = new Set([...prePeekRevealedIds, tapeId]);
+      }
+      peekingTapeIds = new Set([...peekingTapeIds, tapeId]);
+      // Ensure the tape shows as revealed during the peek
+      if (!revealedTapeIds.has(tapeId)) {
+        revealedTapeIds = new Set([...revealedTapeIds, tapeId]);
+      }
+    } else if (action === 'peek-end') {
+      if (peekingTapeIds.has(tapeId)) {
+        const nextPeek = new Set(peekingTapeIds);
+        nextPeek.delete(tapeId);
+        peekingTapeIds = nextPeek;
+        // Restore pre-peek state: if the tape was already revealed before peek, keep it revealed
+        const wasRevealedBefore = prePeekRevealedIds.has(tapeId);
+        const nextPrePeek = new Set(prePeekRevealedIds);
+        nextPrePeek.delete(tapeId);
+        prePeekRevealedIds = nextPrePeek;
+        if (!wasRevealedBefore) {
+          const nextRevealed = new Set(revealedTapeIds);
+          nextRevealed.delete(tapeId);
+          revealedTapeIds = nextRevealed;
+        }
+      }
+    }
+  }
+
+  /** Reveal all tape strips on all pages */
+  function revealAllTape(): void {
+    const next = new Set(revealedTapeIds);
+    for (const state of Object.values(pageState)) {
+      for (const annotation of state.annotations) {
+        if (annotation.type === 'tape') {
+          next.add(annotation.id);
+        }
+      }
+    }
+    revealedTapeIds = next;
+  }
+
+  /** Hide all tape strips (reset all reveals) */
+  function hideAllTape(): void {
+    revealedTapeIds = new Set();
+    peekingTapeIds = new Set();
+    prePeekRevealedIds = new Set();
   }
 
   async function clearLassoSelection(): Promise<void> {
@@ -2644,6 +2720,71 @@
                   <strong>Tap the page to drop a sticky note</strong>
                   <p>The selected color is used for the new note.</p>
                 </div>
+              {:else if activeToolPanel === 'tape'}
+                <div class="tool-panel-header-copy">
+                  <strong>Tape</strong>
+                  <span>Place decorative semi-transparent strips.</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => (tapeStraightMode = true)}>Straight</button>
+                  <button class:active={!tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => (tapeStraightMode = false)}>Free</button>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Width</strong>
+                  </div>
+                  <div class="stroke-popover-mode-group panel-mode-group">
+                    <button class:active={tapeWidth === 18} class="stroke-mode-button" type="button" on:click={() => (tapeWidth = 18)}>Thin</button>
+                    <button class:active={tapeWidth === 30} class="stroke-mode-button" type="button" on:click={() => (tapeWidth = 30)}>Medium</button>
+                    <button class:active={tapeWidth === 48} class="stroke-mode-button" type="button" on:click={() => (tapeWidth = 48)}>Wide</button>
+                  </div>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Pattern</strong>
+                  </div>
+                  <div class="stroke-popover-mode-group panel-mode-group">
+                    <button class:active={tapePattern === 'solid'} class="stroke-mode-button" type="button" on:click={() => (tapePattern = 'solid')}>Solid</button>
+                    <button class:active={tapePattern === 'stripe'} class="stroke-mode-button" type="button" on:click={() => (tapePattern = 'stripe')}>Stripe</button>
+                    <button class:active={tapePattern === 'dots'} class="stroke-mode-button" type="button" on:click={() => (tapePattern = 'dots')}>Dots</button>
+                    <button class:active={tapePattern === 'grid'} class="stroke-mode-button" type="button" on:click={() => (tapePattern = 'grid')}>Grid</button>
+                  </div>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Color</strong>
+                  </div>
+                  <div class="palette-group popover-palette-group">
+                    <button class:active={tapeColor === '#e8b4b8'} class="color-chip popover-chip" type="button" aria-label="Pink tape" style="background:#e8b4b8" on:click={() => (tapeColor = '#e8b4b8')}></button>
+                    <button class:active={tapeColor === '#b8d4e8'} class="color-chip popover-chip" type="button" aria-label="Blue tape" style="background:#b8d4e8" on:click={() => (tapeColor = '#b8d4e8')}></button>
+                    <button class:active={tapeColor === '#d4e8b8'} class="color-chip popover-chip" type="button" aria-label="Green tape" style="background:#d4e8b8" on:click={() => (tapeColor = '#d4e8b8')}></button>
+                    <button class:active={tapeColor === '#f5e6a3'} class="color-chip popover-chip" type="button" aria-label="Yellow tape" style="background:#f5e6a3" on:click={() => (tapeColor = '#f5e6a3')}></button>
+                    <button class:active={tapeColor === '#d8c4e8'} class="color-chip popover-chip" type="button" aria-label="Purple tape" style="background:#d8c4e8" on:click={() => (tapeColor = '#d8c4e8')}></button>
+                    <button class:active={tapeColor === '#f0c8a0'} class="color-chip popover-chip" type="button" aria-label="Peach tape" style="background:#f0c8a0" on:click={() => (tapeColor = '#f0c8a0')}></button>
+                  </div>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Opacity</strong>
+                  </div>
+                  <div class="stroke-popover-mode-group panel-mode-group">
+                    <button class:active={tapeOpacity === 1.0} class="stroke-mode-button" type="button" on:click={() => (tapeOpacity = 1.0)}>Solid</button>
+                    <button class:active={tapeOpacity === 0.55} class="stroke-mode-button" type="button" on:click={() => (tapeOpacity = 0.55)}>Transparent</button>
+                  </div>
+                </div>
+                <div class="tool-panel-group">
+                  <div class="tool-panel-group-header">
+                    <strong>Study Mode</strong>
+                  </div>
+                  <div class="panel-action-grid">
+                    <button class="button subtle" type="button" on:click={revealAllTape}>Reveal All</button>
+                    <button class="button subtle" type="button" on:click={hideAllTape}>Hide All</button>
+                  </div>
+                </div>
+                <div class="stroke-popover-info-card">
+                  <strong>Drag to place tape, tap to peek</strong>
+                  <p>Tap tape to reveal what's underneath. Hold to peek temporarily. Use Reveal All / Hide All for bulk study.</p>
+                </div>
               {:else if activeToolPanel === 'accessories'}
                 <div class="tool-panel-header-copy">
                   <strong>Accessories</strong>
@@ -2741,6 +2882,12 @@
                 stickyNoteColor={stickyNoteColor}
                 lassoMode={lassoMode}
                 laserPointerMode={laserPointerMode}
+                tapeColor={tapeColor}
+                tapePattern={tapePattern}
+                tapeWidth={tapeWidth}
+                tapeStraightMode={tapeStraightMode}
+                tapeOpacity={tapeOpacity}
+                revealedTapeIds={revealedTapeIds}
                 selectedAnnotationIds={selectedAnnotationIdsByPage[pageLayout.page.id] ?? []}
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
@@ -2749,7 +2896,9 @@
                 onAppend={appendAnnotations}
                 onReplace={replaceAnnotations}
                 onSelectionChange={handleSelectionChange}
+                onTapePeek={handleTapePeek}
                 onPreviewAnnotationsChange={handlePreviewAnnotationsChange}
+                onToolGestureStart={() => { activeToolPanel = null; }}
                 viewportTop={scrollPane?.scrollTop ?? 0}
                 viewportHeight={scrollPane?.clientHeight ?? 0}
               />

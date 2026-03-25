@@ -11,6 +11,7 @@ import type {
   ShapeAnnotation,
   StickyNoteAnnotation,
   StrokeAnnotation,
+  TapeAnnotation,
   TextAnnotation
 } from '../../../shared/src/contracts.js';
 import { config } from '../config.js';
@@ -136,6 +137,22 @@ function renderShape(annotation: ShapeAnnotation): string {
   return `<path d="${shapePath(annotation)}"${fill}${stroke} />`;
 }
 
+function renderTape(annotation: TapeAnnotation): string {
+  const dx = annotation.x2 - annotation.x1;
+  const dy = annotation.y2 - annotation.y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  if (length < 0.5) return '';
+  const nx = (-dy / length) * (annotation.tapeWidth / 2);
+  const ny = (dx / length) * (annotation.tapeWidth / 2);
+  const points = [
+    `${annotation.x1 + nx},${annotation.y1 + ny}`,
+    `${annotation.x2 + nx},${annotation.y2 + ny}`,
+    `${annotation.x2 - nx},${annotation.y2 - ny}`,
+    `${annotation.x1 - nx},${annotation.y1 - ny}`
+  ].join(' ');
+  return `<polygon points="${points}" fill="${annotation.color}" fill-opacity="${annotation.opacity}" />`;
+}
+
 /** Renders all annotations into a single SVG markup string. */
 function annotationMarkup(annotations: PageAnnotation[]): string {
   return annotations
@@ -150,6 +167,10 @@ function annotationMarkup(annotations: PageAnnotation[]): string {
 
       if (annotation.type === 'sticky') {
         return renderSticky(annotation);
+      }
+
+      if (annotation.type === 'tape') {
+        return renderTape(annotation);
       }
 
       return renderShape(annotation);

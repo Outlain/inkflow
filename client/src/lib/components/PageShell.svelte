@@ -15,6 +15,8 @@
     ShapeKind,
     StickyNoteAnnotation,
     StrokeAnnotation,
+    TapeAnnotation,
+    TapePattern,
     TextAnnotation
   } from '@shared/contracts';
   import { debugTimeline } from '../debug';
@@ -66,12 +68,22 @@
   export let stickyNoteColor = '#f5ef83';
   export let lassoMode: 'rectangle' | 'freehand' = 'rectangle';
   export let laserPointerMode: 'dot' | 'line' = 'dot';
+  export let tapeColor = '#e8b4b8';
+  export let tapePattern: TapePattern = 'solid';
+  export let tapeWidth = 30;
+  export let tapeStraightMode = true;
+  export let tapeOpacity = 1.0;
   export let selectedAnnotationIds: string[] = [];
+  /** Set of tape annotation IDs currently revealed (transparent) for study peek */
+  export let revealedTapeIds: Set<string> = new Set();
   export let onPenSessionChange: (active: boolean) => void = () => undefined;
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onSelectionChange: (pageId: string, annotationIds: string[]) => void = () => undefined;
   export let onPreviewAnnotationsChange: (pageId: string, annotations: PageAnnotation[] | null) => void = () => undefined;
+  export let onToolGestureStart: () => void = () => undefined;
+  /** Called when the user taps or holds a tape strip to peek at content underneath */
+  export let onTapePeek: (tapeId: string, action: 'toggle' | 'peek-start' | 'peek-end') => void = () => undefined;
 
   // ── Internal state ──
 
@@ -104,6 +116,13 @@
   let laserPointerStyle = '';
   let laserPointerPath = '';
   let localSelectedAnnotationIds: string[] = [];
+  // Stores the last lasso selection area so clicks inside it can start a move gesture
+  let lassoSelectionRegion: { mode: 'rectangle'; left: number; top: number; right: number; bottom: number } | { mode: 'freehand'; polygon: PagePoint[] } | null = null;
+  // Tape peek/reveal state — tracks hold-to-peek gesture
+  let tapePeekPointerId: number | null = null;
+  let tapePeekTapeId: string | null = null;
+  let tapePeekStartTime = 0;
+  const TAPE_PEEK_HOLD_THRESHOLD = 200; // ms — longer than this = hold-to-peek, shorter = toggle
   let moveGesture:
     | null
     | {
@@ -297,10 +316,42 @@
       selectedShapeId = shapeGesture.shapeId;
     }
 
+    if (tool === 'tape' && activePoints.length >= 2) {
+      const start = activePoints[0];
+      const end = activePoints[activePoints.length - 1];
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      // Only commit tape if drag was long enough to be intentional
+      if (length > 8) {
+        const tape = createTapeFromPoints(start, end);
+        onAppend(layout.page.id, [tape as Annotation]);
+      }
+    }
+
     if (tool === 'lasso') {
       const nextSelection = selectAnnotationsFromPath(activePoints);
       localSelectedAnnotationIds = nextSelection;
       onSelectionChange(layout.page.id, nextSelection);
+
+      // Store the selection region so the user can click anywhere inside it to move
+      if (nextSelection.length > 0 && activePoints.length > 1) {
+        if (lassoMode === 'freehand' && activePoints.length > 2) {
+          lassoSelectionRegion = { mode: 'freehand', polygon: closePolygon(activePoints) };
+        } else {
+          const first = activePoints[0];
+          const last = activePoints[activePoints.length - 1];
+          lassoSelectionRegion = {
+            mode: 'rectangle',
+            left: Math.min(first.x, last.x),
+            top: Math.min(first.y, last.y),
+            right: Math.max(first.x, last.x),
+            bottom: Math.max(first.y, last.y)
+          };
+        }
+      } else {
+        lassoSelectionRegion = null;
+      }
     }
 
     if (tool === 'laser') {
@@ -321,6 +372,7 @@
     previewAnnotations = null;
     moveGesture = null;
     shapeGesture = null;
+    lassoSelectionRegion = null;
     clearEraserIndicator();
     clearLaserPointer();
     setInkSession(false);
@@ -542,6 +594,30 @@
   // ── Pointer event handlers ──
 
   function handlePointerDown(event: PointerEvent): void {
+    // ── Tape peek/reveal: intercept finger taps on tape before normal tool handling ──
+    // Works with any tool when using touch, or with hand tool for any pointer type.
+    // This lets users tap tape to peek at hidden content during study sessions.
+    const isTouchInput = event.pointerType === 'touch';
+    const canPeekTape = isTouchInput || tool === 'hand';
+    if (canPeekTape && activePointerId === null) {
+      const coords = pageCoordinates(event);
+      const peekPoint = coords[0];
+      if (peekPoint) {
+        const tape = findTapeAtPoint(peekPoint);
+        if (tape) {
+          event.preventDefault();
+          event.stopPropagation();
+          interactionLayer?.setPointerCapture(event.pointerId);
+          tapePeekPointerId = event.pointerId;
+          tapePeekTapeId = tape.id;
+          tapePeekStartTime = Date.now();
+          // Start hold-to-peek immediately — if released quickly, we'll toggle instead
+          onTapePeek(tape.id, 'peek-start');
+          return;
+        }
+      }
+    }
+
     if (!pointerCanDraw(event)) {
       return;
     }
@@ -560,14 +636,26 @@
         return;
       }
 
-      const hitAnnotation = findAnnotationAtPoint(point);
-      if (hitAnnotation) {
-        const nextSelection = localSelectedAnnotationIds.includes(hitAnnotation.id) ? [...localSelectedAnnotationIds] : [hitAnnotation.id];
-        setSelectedAnnotationIds(nextSelection);
-        beginMoveGesture(event, nextSelection, point);
-        return;
+      // Allow drag-to-move if clicking inside the existing selection region.
+      // This lets the user click anywhere in the lasso area, not just on a specific annotation.
+      if (localSelectedAnnotationIds.length > 0 && lassoSelectionRegion) {
+        let insideRegion = false;
+        if (lassoSelectionRegion.mode === 'rectangle') {
+          const r = lassoSelectionRegion;
+          insideRegion = point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
+        } else {
+          insideRegion = pointInPolygon(point, lassoSelectionRegion.polygon);
+        }
+
+        if (insideRegion) {
+          beginMoveGesture(event, localSelectedAnnotationIds, point);
+          return;
+        }
       }
 
+      // Start a new lasso selection gesture and dismiss the tool flyout
+      lassoSelectionRegion = null;
+      onToolGestureStart();
       beginStroke(event);
       return;
     }
@@ -641,6 +729,21 @@
       return;
     }
 
+    if (tool === 'tape') {
+      const [point] = pageCoordinates(event);
+      if (!point) {
+        return;
+      }
+
+      onToolGestureStart();
+      activePointerId = event.pointerId;
+      activePoints = [point];
+      // Create initial zero-length tape preview
+      const tape = createTapeFromPoints(point, point);
+      previewAnnotations = [...annotations, tape];
+      return;
+    }
+
     beginStroke(event);
   }
 
@@ -671,6 +774,14 @@
       }
 
       previewAnnotations = updateShapePreview(point);
+      return;
+    }
+
+    if (tool === 'tape' && activePoints.length >= 1) {
+      const start = activePoints[0];
+      const end = activePoints[activePoints.length - 1];
+      const tape = createTapeFromPoints(start, end);
+      previewAnnotations = [...annotations, tape];
       return;
     }
 
@@ -738,6 +849,24 @@
   }
 
   function handlePointerUp(event: PointerEvent): void {
+    // ── Tape peek: finish the peek/toggle gesture ──
+    if (tapePeekPointerId === event.pointerId && tapePeekTapeId) {
+      const holdDuration = Date.now() - tapePeekStartTime;
+      const tapeId = tapePeekTapeId;
+      releaseCapturedPointer(event.pointerId);
+      tapePeekPointerId = null;
+      tapePeekTapeId = null;
+      if (holdDuration < TAPE_PEEK_HOLD_THRESHOLD) {
+        // Quick tap — toggle the tape's revealed state (undo the peek-start first)
+        onTapePeek(tapeId, 'peek-end');
+        onTapePeek(tapeId, 'toggle');
+      } else {
+        // Long hold — end the temporary peek, tape goes back to its persistent state
+        onTapePeek(tapeId, 'peek-end');
+      }
+      return;
+    }
+
     if (activePointerId !== event.pointerId) {
       return;
     }
@@ -749,6 +878,15 @@
   }
 
   function handlePointerCancel(event?: PointerEvent): void {
+    // Clean up tape peek on cancel
+    if (event && tapePeekPointerId === event.pointerId && tapePeekTapeId) {
+      onTapePeek(tapePeekTapeId, 'peek-end');
+      releaseCapturedPointer(event.pointerId);
+      tapePeekPointerId = null;
+      tapePeekTapeId = null;
+      return;
+    }
+
     if (event && activePointerId !== event.pointerId) {
       return;
     }
@@ -765,6 +903,14 @@
   }
 
   function handleLostPointerCapture(event: PointerEvent): void {
+    // Clean up tape peek if pointer capture was lost
+    if (tapePeekPointerId === event.pointerId && tapePeekTapeId) {
+      onTapePeek(tapePeekTapeId, 'peek-end');
+      tapePeekPointerId = null;
+      tapePeekTapeId = null;
+      return;
+    }
+
     if (activePointerId !== event.pointerId) {
       return;
     }
@@ -917,6 +1063,16 @@
       };
     }
 
+    if (annotation.type === 'tape') {
+      const corners = tapeCorners(annotation);
+      if (corners.length === 0) {
+        return { left: annotation.x1, top: annotation.y1, right: annotation.x1, bottom: annotation.y1 };
+      }
+      const xs = corners.map((c) => c.x);
+      const ys = corners.map((c) => c.y);
+      return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
+    }
+
     return {
       left: annotation.x,
       top: annotation.y,
@@ -964,6 +1120,12 @@
       return false;
     }
 
+    if (annotation.type === 'tape') {
+      const corners = tapeCorners(annotation);
+      if (corners.length < 3) return false;
+      return polygonContainsPoint(point, [...corners, corners[0]]);
+    }
+
     if (annotation.type === 'text' || annotation.type === 'sticky') {
       return point.x >= annotation.x && point.x <= annotation.x + annotation.width && point.y >= annotation.y && point.y <= annotation.y + annotation.height;
     }
@@ -994,6 +1156,17 @@
       }
     }
 
+    return null;
+  }
+
+  /** Find the topmost solid (non-revealed) tape annotation at a point for peek interaction */
+  function findTapeAtPoint(point: PagePoint): TapeAnnotation | null {
+    for (let index = annotations.length - 1; index >= 0; index -= 1) {
+      const annotation = annotations[index];
+      if (annotation.type === 'tape' && annotationHitTest(annotation, point)) {
+        return annotation;
+      }
+    }
     return null;
   }
 
@@ -1042,68 +1215,142 @@
     return polygonContainsPoint(point, polygon);
   }
 
-  function annotationFullyInsidePolygon(annotation: PageAnnotation, polygon: PagePoint[]): boolean {
-    const polygonBounds = polygon.reduce(
-      (bounds, point) => ({
-        left: Math.min(bounds.left, point.x),
-        right: Math.max(bounds.right, point.x),
-        top: Math.min(bounds.top, point.y),
-        bottom: Math.max(bounds.bottom, point.y)
-      }),
-      {
-        left: Number.POSITIVE_INFINITY,
-        right: Number.NEGATIVE_INFINITY,
-        top: Number.POSITIVE_INFINITY,
-        bottom: Number.NEGATIVE_INFINITY
-      }
-    );
+  // Checks if two line segments (a1→a2) and (b1→b2) intersect
+  function segmentsIntersect(a1: PagePoint, a2: PagePoint, b1: PagePoint, b2: PagePoint): boolean {
+    const d1x = a2.x - a1.x;
+    const d1y = a2.y - a1.y;
+    const d2x = b2.x - b1.x;
+    const d2y = b2.y - b1.y;
+    const cross = d1x * d2y - d1y * d2x;
+    if (Math.abs(cross) < 1e-10) return false;
+    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+    const u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  }
 
-    if (annotation.type === 'stroke') {
-      if (annotation.points.length === 0) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.floor(annotation.points.length / 24));
-      for (let index = 0; index < annotation.points.length; index += step) {
-        const point = annotation.points[index];
-        if (
-          point.x < polygonBounds.left ||
-          point.x > polygonBounds.right ||
-          point.y < polygonBounds.top ||
-          point.y > polygonBounds.bottom ||
-          !pointInPolygon(point, polygon)
-        ) {
-          return false;
+  // Checks if any segment of a stroke crosses any edge of the lasso polygon
+  function strokeCrossesPolygon(points: PagePoint[], polygon: PagePoint[]): boolean {
+    for (let si = 0; si < points.length - 1; si += 1) {
+      for (let pi = 0; pi < polygon.length - 1; pi += 1) {
+        if (segmentsIntersect(points[si], points[si + 1], polygon[pi], polygon[pi + 1])) {
+          return true;
         }
       }
+    }
+    return false;
+  }
 
-      const lastPoint = annotation.points[annotation.points.length - 1];
-      return (
-        lastPoint.x >= polygonBounds.left &&
-        lastPoint.x <= polygonBounds.right &&
-        lastPoint.y >= polygonBounds.top &&
-        lastPoint.y <= polygonBounds.bottom &&
-        pointInPolygon(lastPoint, polygon)
-      );
+  // Select annotation if ANY part overlaps the lasso polygon.
+  // For strokes: any point inside OR any segment crossing the lasso boundary.
+  // For shapes/text/sticky: any corner or center inside, or any polygon edge crossing the bounds.
+  function annotationOverlapsPolygon(annotation: PageAnnotation, polygon: PagePoint[]): boolean {
+    if (annotation.type === 'stroke') {
+      if (annotation.points.length === 0) return false;
+
+      // Check if any stroke point is inside the polygon (sample for performance)
+      const step = Math.max(1, Math.floor(annotation.points.length / 48));
+      for (let index = 0; index < annotation.points.length; index += step) {
+        if (pointInPolygon(annotation.points[index], polygon)) return true;
+      }
+      // Always check the last point
+      if (pointInPolygon(annotation.points[annotation.points.length - 1], polygon)) return true;
+
+      // Check if any stroke segment crosses the lasso boundary
+      return strokeCrossesPolygon(annotation.points, polygon);
     }
 
+    // For shapes, text, stickies — check if any corner or center is inside
     const bounds = annotationBounds(annotation);
-    const corners: PagePoint[] = [
+    const testPoints: PagePoint[] = [
       { x: bounds.left, y: bounds.top, pressure: 0, time: 0 },
       { x: bounds.right, y: bounds.top, pressure: 0, time: 0 },
       { x: bounds.right, y: bounds.bottom, pressure: 0, time: 0 },
       { x: bounds.left, y: bounds.bottom, pressure: 0, time: 0 },
       { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2, pressure: 0, time: 0 }
     ];
+    if (testPoints.some((p) => pointInPolygon(p, polygon))) return true;
 
-    return corners.every(
-      (corner) =>
-        corner.x >= polygonBounds.left &&
-        corner.x <= polygonBounds.right &&
-        corner.y >= polygonBounds.top &&
-        corner.y <= polygonBounds.bottom &&
-        pointInPolygon(corner, polygon)
-    );
+    // Check if any polygon edge crosses the annotation bounding box edges
+    const boxEdges: [PagePoint, PagePoint][] = [
+      [testPoints[0], testPoints[1]],
+      [testPoints[1], testPoints[2]],
+      [testPoints[2], testPoints[3]],
+      [testPoints[3], testPoints[0]]
+    ];
+    for (let pi = 0; pi < polygon.length - 1; pi += 1) {
+      for (const [a, b] of boxEdges) {
+        if (segmentsIntersect(polygon[pi], polygon[pi + 1], a, b)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  // ── Tape tool — create semi-transparent decorative strips ──
+
+  /** Snaps an angle (radians) to the nearest 0°/90°/180°/270° if within 8° */
+  function snapAngle(angle: number): number {
+    const snapTargets = [0, Math.PI / 2, Math.PI, -Math.PI / 2, -Math.PI];
+    const threshold = (8 * Math.PI) / 180;
+    for (const target of snapTargets) {
+      if (Math.abs(angle - target) < threshold) return target;
+    }
+    return angle;
+  }
+
+  function createTapeFromPoints(start: PagePoint, end: PagePoint): TapeAnnotation {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+
+    if (tapeStraightMode) {
+      const angle = snapAngle(Math.atan2(dy, dx));
+      const length = Math.sqrt(dx * dx + dy * dy);
+      dx = Math.cos(angle) * length;
+      dy = Math.sin(angle) * length;
+    }
+
+    return {
+      id: createClientId(),
+      type: 'tape',
+      x1: start.x,
+      y1: start.y,
+      x2: start.x + dx,
+      y2: start.y + dy,
+      tapeWidth,
+      color: tapeColor,
+      pattern: tapePattern,
+      opacity: tapeOpacity
+    };
+  }
+
+  /** Compute the 4 corners of a tape strip as a polygon */
+  function tapeCorners(tape: TapeAnnotation): PagePoint[] {
+    const dx = tape.x2 - tape.x1;
+    const dy = tape.y2 - tape.y1;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (length < 0.001) return [];
+    // Unit normal perpendicular to the tape direction
+    const nx = (-dy / length) * (tape.tapeWidth / 2);
+    const ny = (dx / length) * (tape.tapeWidth / 2);
+    return [
+      { x: tape.x1 + nx, y: tape.y1 + ny, pressure: 0, time: 0 },
+      { x: tape.x2 + nx, y: tape.y2 + ny, pressure: 0, time: 0 },
+      { x: tape.x2 - nx, y: tape.y2 - ny, pressure: 0, time: 0 },
+      { x: tape.x1 - nx, y: tape.y1 - ny, pressure: 0, time: 0 }
+    ];
+  }
+
+  /** SVG polygon points attribute for a tape strip */
+  function tapePolygonPoints(tape: TapeAnnotation, scale: number): string {
+    return tapeCorners(tape)
+      .map((p) => `${p.x * scale},${p.y * scale}`)
+      .join(' ');
+  }
+
+  /** SVG pattern ID for tape patterns — returns null for solid */
+  function tapePatternId(tape: TapeAnnotation): string | null {
+    if (tape.pattern === 'solid') return null;
+    return `tape-pattern-${tape.pattern}-${tape.id}`;
   }
 
   // ── Annotation move/selection gestures ──
@@ -1117,6 +1364,16 @@
           x: point.x + dx,
           y: point.y + dy
         }))
+      };
+    }
+
+    if (annotation.type === 'tape') {
+      return {
+        ...annotation,
+        x1: annotation.x1 + dx,
+        y1: annotation.y1 + dy,
+        x2: annotation.x2 + dx,
+        y2: annotation.y2 + dy
       };
     }
 
@@ -1173,7 +1430,7 @@
     return annotations
       .filter((annotation) => {
         if (polygon) {
-          return annotationFullyInsidePolygon(annotation, polygon);
+          return annotationOverlapsPolygon(annotation, polygon);
         }
 
         const bounds = annotationBounds(annotation);
@@ -1381,6 +1638,7 @@
 
   $: if (tool !== 'lasso' && localSelectedAnnotationIds.length > 0) {
     localSelectedAnnotationIds = [];
+    lassoSelectionRegion = null;
     onSelectionChange(layout.page.id, []);
   }
 
@@ -1539,6 +1797,43 @@
             x={annotation.x * layout.scale}
             y={annotation.y * layout.scale}
           ></rect>
+        {:else if annotation.type === 'tape'}
+          {@const isRevealed = revealedTapeIds.has(annotation.id)}
+          <g style="transition: opacity 150ms ease-in-out;" opacity={isRevealed ? 0.08 : 1}>
+            {#if tapePatternId(annotation)}
+              <defs>
+                {#if annotation.pattern === 'stripe'}
+                  <pattern id={tapePatternId(annotation)} width="8" height="8" patternUnits="userSpaceOnUse">
+                    <rect width="8" height="8" fill={annotation.color}></rect>
+                    <line x1="0" y1="0" x2="0" y2="8" stroke="rgba(255,255,255,0.35)" stroke-width="3"></line>
+                  </pattern>
+                {:else if annotation.pattern === 'dots'}
+                  <pattern id={tapePatternId(annotation)} width="10" height="10" patternUnits="userSpaceOnUse">
+                    <rect width="10" height="10" fill={annotation.color}></rect>
+                    <circle cx="5" cy="5" r="1.5" fill="rgba(255,255,255,0.4)"></circle>
+                  </pattern>
+                {:else if annotation.pattern === 'grid'}
+                  <pattern id={tapePatternId(annotation)} width="10" height="10" patternUnits="userSpaceOnUse">
+                    <rect width="10" height="10" fill={annotation.color}></rect>
+                    <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1"></path>
+                  </pattern>
+                {/if}
+              </defs>
+            {/if}
+            <polygon
+              points={tapePolygonPoints(annotation, layout.scale)}
+              fill={tapePatternId(annotation) ? `url(#${tapePatternId(annotation)})` : annotation.color}
+              fill-opacity={annotation.opacity}
+              stroke="none"
+            ></polygon>
+            <!-- Subtle torn-edge effect along the short sides -->
+            <polygon
+              points={tapePolygonPoints(annotation, layout.scale)}
+              fill="none"
+              stroke="rgba(255,255,255,0.18)"
+              stroke-width="0.8"
+            ></polygon>
+          </g>
         {:else}
           <path
             d={shapePath(annotation, layout.scale)}

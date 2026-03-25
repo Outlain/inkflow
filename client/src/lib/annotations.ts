@@ -80,6 +80,22 @@ export function eraseAnnotations(
       return textHit(annotation, eraserPoints) ? [] : [annotation];
     }
 
+    if (annotation.type === 'tape') {
+      // Tape strips use endpoint-based geometry — check if any eraser point is near the center line
+      const dx = annotation.x2 - annotation.x1;
+      const dy = annotation.y2 - annotation.y1;
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq < 1) return [];
+      for (const ep of eraserPoints) {
+        const t = Math.max(0, Math.min(1, ((ep.x - annotation.x1) * dx + (ep.y - annotation.y1) * dy) / lengthSq));
+        const px = annotation.x1 + t * dx;
+        const py = annotation.y1 + t * dy;
+        const dist = Math.sqrt((ep.x - px) ** 2 + (ep.y - py) ** 2);
+        if (dist <= annotation.tapeWidth / 2 + radius) return [];
+      }
+      return [annotation];
+    }
+
     return shapeHit(annotation, eraserPoints, radius) ? [] : [annotation];
   });
 }

@@ -8,10 +8,11 @@
 export type DocumentKind = 'notebook' | 'pdf';
 export type PageKind = 'blank' | 'ruled' | 'grid' | 'dot' | 'pdf';
 export type NotebookTemplate = Extract<PageKind, 'blank' | 'ruled' | 'grid' | 'dot'>;
-type KnownEditorTool = 'lasso' | 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'text' | 'shape' | 'sticky' | 'laser' | 'hand';
+type KnownEditorTool = 'lasso' | 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'text' | 'shape' | 'sticky' | 'tape' | 'laser' | 'hand';
 export type EditorTool = KnownEditorTool | (string & {});
 export type ShapeKind = 'rectangle' | 'ellipse' | 'triangle' | 'diamond';
 export type LineStyle = 'solid' | 'dashed' | 'dotted';
+export type TapePattern = 'solid' | 'stripe' | 'dots' | 'grid';
 export type LassoMode = 'rectangle' | 'freehand';
 export type LaserPointerMode = 'dot' | 'line';
 /** Whether annotation saves merge with existing data ('append') or overwrite ('replace'). */
@@ -154,7 +155,26 @@ export interface ShapeAnnotation {
   lineStyle: LineStyle;
 }
 
-export type Annotation = StrokeAnnotation | TextAnnotation | ShapeAnnotation;
+/** Semi-transparent decorative strip placed by dragging from start to end point. */
+export interface TapeAnnotation {
+  id: string;
+  type: 'tape';
+  /** Start x in page coordinates */
+  x1: number;
+  /** Start y in page coordinates */
+  y1: number;
+  /** End x in page coordinates */
+  x2: number;
+  /** End y in page coordinates */
+  y2: number;
+  /** Thickness of the tape strip in page coordinates */
+  tapeWidth: number;
+  color: string;
+  pattern: TapePattern;
+  opacity: number;
+}
+
+export type Annotation = StrokeAnnotation | TextAnnotation | ShapeAnnotation | TapeAnnotation;
 /** Superset of Annotation that also includes sticky notes (only used in thumbnails). */
 export type PageAnnotation = Annotation | StickyNoteAnnotation;
 
