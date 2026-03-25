@@ -1,8 +1,12 @@
-// Network quality monitor — detects connection speed and adapts app behavior.
-// Uses three signal layers:
-//   1. PerformanceObserver — measures real transferSize + duration of HTTP requests
-//   2. Navigator.connection API — effectiveType, downlink, rtt (Chrome/Edge/Android)
-//   3. Manual "Low Data Mode" override persisted in localStorage
+/**
+ * Network quality monitor — detects connection speed and adapts app behavior.
+ * Uses three signal layers (strongest first):
+ *   1. PerformanceObserver — measures real transferSize + duration of HTTP requests
+ *   2. Navigator.connection API — effectiveType, downlink, rtt (Chrome/Edge/Android)
+ *   3. Manual "Low Data Mode" override persisted in localStorage
+ *
+ * Downgrades apply immediately; upgrades require sustained improvement (hysteresis).
+ */
 
 export type ConnectionQuality = 'fast' | 'medium' | 'slow';
 

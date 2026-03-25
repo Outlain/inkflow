@@ -1,3 +1,8 @@
+/**
+ * Annotation helpers — stroke creation, SVG path generation, stabilization,
+ * and eraser hit-testing (whole-stroke and partial/split erasure).
+ */
+
 import type { PageAnnotation, PagePoint, StrokeAnnotation, TextAnnotation, StickyNoteAnnotation, ShapeAnnotation } from '@shared/contracts';
 import { DEFAULT_STROKE_PRESET_SETTINGS, resolvePresetValue, type EraserStrokeMode } from './strokeSettings';
 
@@ -5,6 +10,7 @@ export interface EraseAnnotationsOptions {
   strokeMode?: EraserStrokeMode;
 }
 
+/** Extract plain text content from text and sticky note annotations. */
 export function annotationTextFromAnnotations(annotations: PageAnnotation[]): string {
   return annotations
     .filter((annotation): annotation is TextAnnotation | StickyNoteAnnotation => annotation.type === 'text' || annotation.type === 'sticky')
@@ -12,6 +18,10 @@ export function annotationTextFromAnnotations(annotations: PageAnnotation[]): st
     .filter(Boolean)
     .join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// SVG path generation
+// ---------------------------------------------------------------------------
 
 export function strokePath(points: PagePoint[], scale: number): string {
   if (points.length === 0) {
@@ -22,6 +32,7 @@ export function strokePath(points: PagePoint[], scale: number): string {
   return [`M ${first.x * scale} ${first.y * scale}`, ...rest.map((point) => `L ${point.x * scale} ${point.y * scale}`)].join(' ');
 }
 
+/** Build an SVG path string for triangle or diamond shape annotations. */
 export function shapePath(annotation: ShapeAnnotation, scale: number): string {
   const x = annotation.x * scale;
   const y = annotation.y * scale;
@@ -38,6 +49,10 @@ export function shapePath(annotation: ShapeAnnotation, scale: number): string {
 
   return '';
 }
+
+// ---------------------------------------------------------------------------
+// Erasure — hit testing and stroke splitting
+// ---------------------------------------------------------------------------
 
 export function eraseAnnotations(
   annotations: PageAnnotation[],
@@ -69,6 +84,10 @@ export function eraseAnnotations(
   });
 }
 
+/**
+ * Partial erasure: remove hit points from a stroke and split the remaining
+ * points into contiguous runs, each becoming a new stroke fragment.
+ */
 function eraseStrokeAnnotation(annotation: StrokeAnnotation, eraserPoints: PagePoint[], radiusSquared: number): StrokeAnnotation[] {
   if (annotation.points.length === 0) {
     return [annotation];
@@ -134,6 +153,7 @@ function shapeHit(annotation: ShapeAnnotation, eraserPoints: PagePoint[], radius
   );
 }
 
+/** Check if any eraser path segment comes within radius of a stroke segment. */
 function segmentHit(start: PagePoint, end: PagePoint, eraserPoints: PagePoint[], radius: number): boolean {
   if (eraserPoints.length === 1) {
     return distanceSquaredPointToSegment(eraserPoints[0], start, end) <= radius * radius;
@@ -148,6 +168,11 @@ function segmentHit(start: PagePoint, end: PagePoint, eraserPoints: PagePoint[],
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Computational geometry — segment-segment and point-segment distance
+// ---------------------------------------------------------------------------
+
+/** Minimum squared distance between two line segments AB and CD. */
 function distanceSquaredBetweenSegments(a: PagePoint, b: PagePoint, c: PagePoint, d: PagePoint): number {
   if (segmentsIntersect(a, b, c, d)) {
     return 0;
@@ -161,6 +186,7 @@ function distanceSquaredBetweenSegments(a: PagePoint, b: PagePoint, c: PagePoint
   );
 }
 
+/** Test whether segments AB and CD intersect using cross-product orientation. */
 function segmentsIntersect(a: PagePoint, b: PagePoint, c: PagePoint, d: PagePoint): boolean {
   const ab = orientation(a, b, c);
   const ac = orientation(a, b, d);
@@ -175,6 +201,7 @@ function segmentsIntersect(a: PagePoint, b: PagePoint, c: PagePoint, d: PagePoin
   return (ab > 0) !== (ac > 0) && (cd > 0) !== (ce > 0);
 }
 
+/** Orientation of the triplet (a, b, c): 0 = collinear, 1 = clockwise, -1 = counter-clockwise. */
 function orientation(a: PagePoint, b: PagePoint, c: PagePoint): number {
   const value = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
   if (Math.abs(value) < 1e-9) {
@@ -188,6 +215,7 @@ function onSegment(a: PagePoint, b: PagePoint, c: PagePoint): boolean {
   return b.x >= Math.min(a.x, c.x) - 1e-9 && b.x <= Math.max(a.x, c.x) + 1e-9 && b.y >= Math.min(a.y, c.y) - 1e-9 && b.y <= Math.max(a.y, c.y) + 1e-9;
 }
 
+/** Squared distance from a point to the nearest point on segment start--end. */
 function distanceSquaredPointToSegment(point: PagePoint, start: PagePoint, end: PagePoint): number {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -214,10 +242,19 @@ function distanceSquared(a: PagePoint, b: PagePoint): number {
   return dx * dx + dy * dy;
 }
 
+// ---------------------------------------------------------------------------
+// Stroke creation and stabilization
+// ---------------------------------------------------------------------------
+
 export function toolStrokeWidth(sizePreset: number, highlighter = false): number {
   return resolvePresetValue(highlighter ? DEFAULT_STROKE_PRESET_SETTINGS.highlighter : DEFAULT_STROKE_PRESET_SETTINGS.pen, sizePreset);
 }
 
+/**
+ * Smooth a pen/highlighter stroke using weighted-average passes.
+ * Higher stabilization values increase the smoothing radius, blend factor,
+ * number of passes, and tail trimming aggressiveness.
+ */
 export function stabilizeStrokePoints(points: PagePoint[], stabilization: number): PagePoint[] {
   const amount = Math.max(0, Math.min(100, stabilization));
   if (amount <= 0 || points.length < 3) {
@@ -236,6 +273,7 @@ export function stabilizeStrokePoints(points: PagePoint[], stabilization: number
   return trimStrokeTails(smoothed, amount);
 }
 
+/** Lighter stabilization variant for pencil strokes — preserves more texture. */
 export function stabilizePencilStrokePoints(points: PagePoint[], stabilization: number): PagePoint[] {
   const amount = Math.max(0, Math.min(100, stabilization));
   if (amount <= 0 || points.length < 3) {
@@ -271,6 +309,7 @@ export function createStroke(params: {
   };
 }
 
+/** Single weighted-average smoothing pass over interior points (endpoints preserved). */
 function smoothStrokePass(points: PagePoint[], radius: number, blend: number): PagePoint[] {
   const lastIndex = points.length - 1;
   const next = points.map((point) => ({ ...point }));
@@ -307,6 +346,11 @@ function smoothStrokePass(points: PagePoint[], radius: number, blend: number): P
   return next;
 }
 
+/**
+ * Remove sharp "hook" artifacts at stroke endpoints caused by pen lift-off.
+ * Detects when the final segment reverses direction sharply and is short
+ * relative to the preceding segment, then drops that point.
+ */
 function trimStrokeTails(points: PagePoint[], stabilization: number): PagePoint[] {
   if (points.length < 4 || stabilization < 25) {
     return points;

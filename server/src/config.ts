@@ -1,3 +1,5 @@
+/** Server configuration from environment variables with sensible defaults. */
+
 import path from 'node:path';
 
 function integerFromEnv(value: string | undefined, fallback: number): number {

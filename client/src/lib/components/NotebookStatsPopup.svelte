@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Per-document activity stats popup — total time, sessions, daily chart,
+  // chapter dwell time, page-level time, and recent session history.
   import { createEventDispatcher, onMount } from 'svelte';
   import type { DocumentActivitySummary } from '@shared/contracts';
   import { fetchDocumentActivity } from '../activity';

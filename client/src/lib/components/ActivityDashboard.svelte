@@ -1,4 +1,5 @@
 <script lang="ts">
+  // Dashboard widget showing today's study stats, weekly bar chart, and top notebooks.
   import { onMount } from 'svelte';
   import type { ActivitySummary } from '@shared/contracts';
   import { fetchActivitySummary } from '../activity';

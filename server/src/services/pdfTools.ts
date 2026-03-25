@@ -1,18 +1,30 @@
+/**
+ * PDF processing tools — wraps qpdf and Poppler CLI binaries (pdfinfo, pdftotext, pdftoppm).
+ * Handles metadata extraction, text extraction, PDF linearization, preview image generation,
+ * per-page PDF extraction, and outline (table of contents) extraction via mutool.
+ */
+
 import { execFile } from 'node:child_process';
 import { access, copyFile, mkdir, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { nanoid } from 'nanoid';
-import { PDFDocument } from 'pdf-lib';
 import { config } from '../config.js';
 import { getPreviewDirectory, getPreviewPath, getPagePdfPath } from '../lib/fs.js';
 
 const execFileAsync = promisify(execFile);
+
+/** In-flight preview generation tasks, keyed by output path to deduplicate concurrent requests. */
 const previewTasks = new Map<string, Promise<string>>();
+
+/** Width buckets for preview images — requested widths snap to the nearest bucket. */
 const previewWidthBuckets = [120, 180, 240, 320, 480, 720, 960, 1280];
 
+/** Widths pre-generated on import so common preview sizes are ready immediately. */
 const PREVIEW_PREGENERATE_WIDTHS = [240, 480, 960];
 const PREVIEW_CONCURRENCY = 3;
+
+// ── Metadata extraction (Poppler pdfinfo) ──
 
 export interface PdfPageMetadata {
   index: number;
@@ -45,7 +57,9 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+/** Extracts page count and per-page dimensions from a PDF using Poppler's pdfinfo. */
 export async function extractPdfMetadata(filePath: string): Promise<PdfMetadata> {
+  // First pass: get page count from a lightweight single-page query
   const summary = await readPdfInfo(filePath, 1, 1);
   const pageCountMatch = summary.match(/^Pages:\s+(\d+)/m);
   const firstSizeMatch = summary.match(/^Page\s+1\s+size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts/m);
@@ -59,6 +73,7 @@ export async function extractPdfMetadata(filePath: string): Promise<PdfMetadata>
     throw new Error('PDF page count is invalid.');
   }
 
+  // Second pass: get per-page dimensions for all pages
   const details = await readPdfInfo(filePath, 1, pageCount);
   const pageMatches = [...details.matchAll(/^Page\s+(\d+)\s+size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts/mg)];
   const pages = pageMatches.map((match) => ({
@@ -71,6 +86,7 @@ export async function extractPdfMetadata(filePath: string): Promise<PdfMetadata>
     return { pageCount, pages };
   }
 
+  // Some PDFs don't report per-page sizes; fall back to page 1 dimensions or US Letter
   const fallbackWidth = Number(firstSizeMatch?.[1] ?? 612);
   const fallbackHeight = Number(firstSizeMatch?.[2] ?? 792);
   return {
@@ -83,6 +99,9 @@ export async function extractPdfMetadata(filePath: string): Promise<PdfMetadata>
   };
 }
 
+// ── Text extraction (Poppler pdftotext) ──
+
+/** Extracts text content from each page using Poppler's pdftotext. Pages split on form-feed. */
 export async function extractPdfTextPages(filePath: string): Promise<string[]> {
   const tempOutput = path.join(config.dataDir, 'temp', `${nanoid()}.txt`);
 
@@ -110,7 +129,15 @@ export async function extractPdfTextPages(filePath: string): Promise<string[]> {
   }
 }
 
+// ── PDF finalization (qpdf linearization) ──
+
+/**
+ * Moves a temp upload to permanent storage, optionally linearizing large PDFs
+ * with qpdf for better streaming performance. Falls back to plain copy if qpdf
+ * is unavailable or linearization fails.
+ */
 export async function finalizeUploadedPdf(tempPath: string, outputPath: string, fileSize: number): Promise<void> {
+  // Small files don't benefit from linearization; just rename
   if (fileSize < config.pdfLinearizeThresholdBytes) {
     await rename(tempPath, outputPath);
     return;
@@ -142,12 +169,16 @@ export async function finalizeUploadedPdf(tempPath: string, outputPath: string, 
   }
 }
 
+// ── Preview image generation (Poppler pdftoppm) ──
+
+/** Snaps a requested width to the nearest preview width bucket. */
 export function resolvePreviewWidth(requestedWidth: number): number {
   const safeWidth = Math.max(120, Math.min(1280, Math.round(requestedWidth)));
   const bucket = previewWidthBuckets.find((value) => value >= safeWidth);
   return bucket ?? previewWidthBuckets[previewWidthBuckets.length - 1];
 }
 
+/** Generates a JPEG preview image for a PDF page, caching the result on disk. Deduplicates concurrent requests. */
 export async function ensurePdfPreviewImage(storageKey: string, sourcePath: string, pageNumber: number, width: number): Promise<string> {
   const resolvedWidth = resolvePreviewWidth(width);
   const outputPath = getPreviewPath(config.dataDir, storageKey, pageNumber, resolvedWidth);
@@ -206,12 +237,16 @@ export async function ensurePdfPreviewImage(storageKey: string, sourcePath: stri
   return task;
 }
 
-// Per-page PDF extraction — extracts a single page from the source PDF using
-// qpdf and caches it on disk. Each extracted page is self-contained with its
-// own fonts and images. Used by slow/medium connections so the client can
-// download ~100-500KB per page instead of ranging into the full 81MB file.
+// ── Per-page PDF extraction (qpdf) ──
+
+/** In-flight per-page PDF extraction tasks, keyed by output path to deduplicate. */
 const pagePdfTasks = new Map<string, Promise<string>>();
 
+/**
+ * Extracts a single page from a source PDF using qpdf and caches it on disk.
+ * Each extracted page is self-contained (~100-500KB) with its own fonts/images.
+ * Used by slow/medium connections instead of range requests into the full file.
+ */
 export async function ensurePagePdf(storageKey: string, sourcePath: string, pageNumber: number): Promise<string> {
   const outputPath = getPagePdfPath(config.dataDir, storageKey, pageNumber);
   if (await fileExists(outputPath)) {
@@ -256,6 +291,9 @@ export async function ensurePagePdf(storageKey: string, sourcePath: string, page
   return task;
 }
 
+// ── Batch preview generation ──
+
+/** Pre-generates previews at common widths for all pages, running PREVIEW_CONCURRENCY workers. */
 export async function preGenerateAllPreviews(
   storageKey: string,
   sourcePath: string,
@@ -288,6 +326,7 @@ export async function preGenerateAllPreviews(
   await Promise.all(workers);
 }
 
+/** Checks if previews exist for a PDF (by sampling page 1) and regenerates all if missing. */
 export async function ensureAllPreviewsExist(
   storageKey: string,
   sourcePath: string,
@@ -302,11 +341,14 @@ export async function ensureAllPreviewsExist(
   }
 }
 
+// ── Outline extraction (mutool) ──
+
 export interface PdfOutlineEntry {
   title: string;
   pageIndex: number;
 }
 
+/** Extracts the PDF outline (table of contents) using mutool. Returns empty on failure. */
 export async function extractPdfOutline(filePath: string): Promise<PdfOutlineEntry[]> {
   try {
     // Try using dumppdf / mutool for outline extraction

@@ -1,3 +1,7 @@
+/**
+ * Generate a client-side unique ID (v4 UUID when possible, timestamp fallback).
+ * Used for annotation and stroke IDs that must be unique before server roundtrip.
+ */
 export function createClientId(): string {
   const cryptoApi = globalThis.crypto;
 

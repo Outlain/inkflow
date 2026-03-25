@@ -1,6 +1,11 @@
+/**
+ * Server-side SVG thumbnail renderer — generates annotated page thumbnails as inline SVG.
+ * For PDF pages, embeds a base64 JPEG preview as the background image.
+ * Supports strokes, text, sticky notes, and shapes.
+ */
+
 import { readFile } from 'node:fs/promises';
 import type {
-  Annotation,
   PageAnnotation,
   PageRecord,
   ShapeAnnotation,
@@ -12,13 +17,14 @@ import { config } from '../config.js';
 import { getUploadPath } from '../lib/fs.js';
 import { ensurePdfPreviewImage } from './pdfTools.js';
 
-// In-memory cache for base64-encoded preview JPEGs used in thumbnails.
-// Key: `${storageKey}:${pageNumber}:${resolvedWidth}`
+/** In-memory cache for base64-encoded preview JPEGs used in thumbnails. */
 const thumbnailJpegCache = new Map<string, string>();
 
 export function clearThumbnailJpegCache(): void {
   thumbnailJpegCache.clear();
 }
+
+// ── SVG helpers ──
 
 function escapeXml(value: string): string {
   return value
@@ -58,6 +64,8 @@ function shapePath(shape: ShapeAnnotation): string {
   return `M ${shape.x + shape.width / 2} ${shape.y} L ${shape.x + shape.width} ${shape.y + shape.height / 2} L ${shape.x + shape.width / 2} ${shape.y + shape.height} L ${shape.x} ${shape.y + shape.height / 2} Z`;
 }
 
+// ── Template backgrounds (notebook page patterns) ──
+
 function templateMarkup(page: PageRecord): string {
   if (page.kind === 'pdf') {
     return '';
@@ -95,6 +103,8 @@ function templateMarkup(page: PageRecord): string {
   return `<rect width="${page.width}" height="${page.height}" fill="#fffdfa" />`;
 }
 
+// ── Per-annotation SVG renderers ──
+
 function renderStroke(annotation: StrokeAnnotation): string {
   const opacity = annotation.tool === 'highlighter' ? 0.3 : annotation.tool === 'pencil' ? 0.72 : 1;
   return `<path d="${strokePath(annotation.points)}" fill="none" stroke="${annotation.color}" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="${opacity}" stroke-width="${Math.max(annotation.width, annotation.tool === 'highlighter' ? 1.5 : 1)}" />`;
@@ -126,6 +136,7 @@ function renderShape(annotation: ShapeAnnotation): string {
   return `<path d="${shapePath(annotation)}"${fill}${stroke} />`;
 }
 
+/** Renders all annotations into a single SVG markup string. */
 function annotationMarkup(annotations: PageAnnotation[]): string {
   return annotations
     .map((annotation) => {
@@ -146,6 +157,9 @@ function annotationMarkup(annotations: PageAnnotation[]): string {
     .join('');
 }
 
+// ── Main render entry point ──
+
+/** Generates a complete SVG thumbnail with background (template or PDF preview) and annotations. */
 export async function renderAnnotatedThumbnailSvg(params: {
   page: PageRecord;
   annotations: PageAnnotation[];

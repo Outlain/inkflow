@@ -4,6 +4,8 @@
 </script>
 
 <script lang="ts">
+  // Renders a single-page thumbnail — either a server-side JPEG or a client-drawn
+  // canvas with template background and annotations. Used in the sidebar nav strip.
   import { onMount } from 'svelte';
   import type { DocumentBundle, PageAnnotation, ShapeAnnotation, StrokeAnnotation } from '@shared/contracts';
   import { shapePath, strokePath } from '../annotations';

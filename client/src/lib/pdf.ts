@@ -1,3 +1,9 @@
+/**
+ * PDF.js integration — document loading, segment rendering, and an LRU render
+ * surface cache. Adapts fetch strategy based on connection quality: full-file
+ * streaming on fast networks, per-page PDF extracts on slow/medium.
+ */
+
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { FileRecord, PageRecord } from '@shared/contracts';
@@ -5,16 +11,27 @@ import { getNetworkConfig, getConnectionQuality, recordThroughput } from './netw
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
+// ---------------------------------------------------------------------------
+// Caches
+// ---------------------------------------------------------------------------
+
+/** Deduplicates concurrent getDocument() calls for the same file/page. */
 const documentTasks = new Map<string, Promise<PDFDocumentProxy>>();
+/** Tracks the active RenderTask per canvas so it can be cancelled on re-render. */
 const canvasTasks = new WeakMap<HTMLCanvasElement, RenderTask>();
+/** LRU cache of rendered surfaces keyed by file+page+resolution+segment. */
 const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasElement; pixels: number }>();
 
-// ~100M pixels ≈ 400 MB — keeps ~34 full A4 pages at 2× DPR rendered in cache
+// ~100M pixels ≈ 400 MB — keeps ~34 full A4 pages at 2x DPR rendered in cache
 const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
 // ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile
 const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
 
 export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
+
+// ---------------------------------------------------------------------------
+// Document loading
+// ---------------------------------------------------------------------------
 
 function documentKey(file: FileRecord): string {
   return `${file.id}:${file.url}`;
@@ -87,11 +104,16 @@ export function getPagePdfDocument(pageId: string): Promise<PDFDocumentProxy> {
   return task;
 }
 
+// ---------------------------------------------------------------------------
+// Device scale and environment detection
+// ---------------------------------------------------------------------------
+
 export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
   canvasTasks.get(canvas)?.cancel();
   canvasTasks.delete(canvas);
 }
 
+/** Choose the device pixel scale for PDF rendering based on device type and connection quality. */
 export function resolvePdfDeviceScale(options: {
   devicePixelRatio: number;
   pageScale: number;
@@ -134,6 +156,10 @@ function currentEnvironment(): { devicePixelRatio: number; coarsePointer: boolea
   };
 }
 
+// ---------------------------------------------------------------------------
+// Render surface cache (LRU, pixel-budget eviction)
+// ---------------------------------------------------------------------------
+
 function renderSurfaceKey(file: FileRecord, page: PageRecord, targetWidth: number, targetHeight: number): string {
   return `${file.id}:${page.id}:${targetWidth}x${targetHeight}`;
 }
@@ -150,6 +176,7 @@ function renderSegmentKey(
   return `${renderSurfaceKey(file, page, targetWidth, targetHeight)}:${segment}:${segmentTop}:${segmentHeight}`;
 }
 
+/** Move a cache entry to the end (most-recently-used) and return its surface. */
 function touchCacheEntry(cacheKey: string): ImageBitmap | HTMLCanvasElement | null {
   const cached = renderSurfaceCache.get(cacheKey);
   if (!cached) {
@@ -165,6 +192,7 @@ function cachePixelBudget(coarsePointer: boolean): number {
   return coarsePointer ? TOUCH_RENDER_CACHE_PIXEL_BUDGET : DESKTOP_RENDER_CACHE_PIXEL_BUDGET;
 }
 
+/** Insert a rendered surface into the LRU cache, evicting oldest entries if over budget. */
 function storeRenderSurface(cacheKey: string, surface: ImageBitmap | HTMLCanvasElement, coarsePointer: boolean): void {
   const pixels = surface.width * surface.height;
   renderSurfaceCache.delete(cacheKey);
@@ -232,6 +260,11 @@ function ensureCanvasSize(params: {
   return canvas.getContext('2d', { alpha: false });
 }
 
+// ---------------------------------------------------------------------------
+// Page rendering
+// ---------------------------------------------------------------------------
+
+/** Compute the vertical slice (top offset + height) for a given segment of a page. */
 function segmentBounds(targetHeight: number, segment: PdfRenderSegment): { top: number; height: number } {
   if (segment === 'full') {
     return { top: 0, height: targetHeight };
@@ -247,6 +280,11 @@ function segmentBounds(targetHeight: number, segment: PdfRenderSegment): { top: 
   return { top: third * 2, height: Math.max(1, targetHeight - third * 2) };
 }
 
+/**
+ * Render a PDF page (or a vertical segment of one) onto the given canvas.
+ * Returns a cached surface when available; otherwise renders into an
+ * offscreen surface, caches it, then composites onto the visible canvas.
+ */
 export async function renderPdfPage(params: {
   canvas: HTMLCanvasElement;
   page: PageRecord;
@@ -345,6 +383,7 @@ export async function renderPdfPage(params: {
   }
 }
 
+/** Warm the PDF.js document cache for a page without rendering to canvas. */
 export async function prefetchPdfPage(file: FileRecord, page: PageRecord): Promise<void> {
   try {
     const quality = getConnectionQuality();

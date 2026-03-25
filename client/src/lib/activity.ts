@@ -1,3 +1,8 @@
+/**
+ * Study session tracking, app session management, and activity event logging.
+ * Manages device identity, heartbeats, idle detection, and multi-tab coordination.
+ */
+
 import type {
   ActivityConfigPayload,
   ActivitySessionRecord,

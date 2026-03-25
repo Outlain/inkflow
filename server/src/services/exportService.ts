@@ -1,9 +1,17 @@
+/**
+ * Annotated PDF export — rebuilds a complete PDF with annotations rendered
+ * directly onto each page using pdf-lib. Supports strokes, text, shapes,
+ * and notebook templates (ruled, grid, dot).
+ */
+
 import { readFile } from 'node:fs/promises';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import type { Annotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from '../../../shared/src/contracts.js';
 import { config } from '../config.js';
 import { getUploadPath } from '../lib/fs.js';
 import { getDocumentBundle, getPageAnnotations } from './libraryService.js';
+
+// ── Helpers ──
 
 function sanitizeFilename(value: string): string {
   return value.replace(/[^\w.-]+/g, ' ').trim() || 'inkflow-export';
@@ -30,6 +38,9 @@ function lineDash(shape: ShapeAnnotation): number[] | undefined {
   return undefined;
 }
 
+// ── Template rendering (blank notebook backgrounds) ──
+
+/** Draws ruled/grid/dot template lines onto a blank notebook page. */
 function drawTemplate(page: import('pdf-lib').PDFPage, template: string | null): void {
   const width = page.getWidth();
   const height = page.getHeight();
@@ -84,6 +95,8 @@ function drawTemplate(page: import('pdf-lib').PDFPage, template: string | null):
   }
 }
 
+// ── Annotation rendering ──
+
 function drawStroke(page: import('pdf-lib').PDFPage, annotation: StrokeAnnotation): void {
   const color = hexToRgb(annotation.color);
   const opacity = annotation.tool === 'highlighter' ? 0.24 : 1;
@@ -125,6 +138,7 @@ function drawTextAnnotation(page: import('pdf-lib').PDFPage, annotation: TextAnn
 
 function drawShape(page: import('pdf-lib').PDFPage, annotation: ShapeAnnotation): void {
   const color = hexToRgb(annotation.color);
+  // pdf-lib uses bottom-left origin; convert from top-left
   const y = page.getHeight() - annotation.y - annotation.height;
   const fillColor = annotation.fill ? color : undefined;
   const borderDash = lineDash(annotation);
@@ -159,6 +173,7 @@ function drawShape(page: import('pdf-lib').PDFPage, annotation: ShapeAnnotation)
     return;
   }
 
+  // Triangle and diamond are rendered as SVG paths
   const path =
     annotation.shape === 'triangle'
       ? `M ${annotation.x + annotation.width / 2} ${page.getHeight() - annotation.y}
@@ -193,6 +208,8 @@ function drawAnnotations(page: import('pdf-lib').PDFPage, annotations: Annotatio
     drawShape(page, annotation);
   }
 }
+
+// ── Export entry point ──
 
 export async function exportDocumentPdf(documentId: string): Promise<{ bytes: Uint8Array; filename: string }> {
   const bundle = getDocumentBundle(documentId);

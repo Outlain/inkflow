@@ -1,3 +1,8 @@
+/**
+ * IndexedDB draft persistence — stores per-page annotation snapshots locally
+ * so saves are instant (local-first) and flush to the server in the background.
+ */
+
 import type { Annotation } from '@shared/contracts';
 
 export interface PageDraftRecord {
@@ -69,6 +74,7 @@ function openDatabase(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
+/** Run a single IndexedDB request inside a transaction, promisified. */
 async function transact<T>(mode: IDBTransactionMode, execute: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const database = await openDatabase();
 
@@ -111,6 +117,7 @@ function createDraftStore(database: IDBDatabase): IDBObjectStore {
   return store;
 }
 
+/** Normalize legacy records that may use `id` instead of `pageId` as the key field. */
 function normalizeDraftRecord(record?: StoredPageDraftRecord): PageDraftRecord | null {
   if (!record) {
     return null;

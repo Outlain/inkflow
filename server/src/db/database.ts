@@ -1,3 +1,8 @@
+/**
+ * SQLite connection bootstrap — creates the database file, enables WAL mode,
+ * runs schema migrations, and exposes a singleton connection via getDb().
+ */
+
 import Database from 'better-sqlite3';
 import { config } from '../config.js';
 import { ensureDataLayout } from '../lib/fs.js';
@@ -5,6 +10,7 @@ import { schemaSql, schemaVersion } from './schema.js';
 
 let database: Database.Database | null = null;
 
+/** Adds a column if it doesn't already exist — used for incremental schema migrations. */
 function ensureColumn(db: Database.Database, tableName: string, columnName: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === columnName)) {

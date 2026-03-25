@@ -1,4 +1,10 @@
+/**
+ * SQLite schema DDL — all tables, indexes, and the FTS5 virtual table for full-text search.
+ * Executed on startup via database.ts. Uses IF NOT EXISTS for idempotent initialization.
+ */
+
 export const schemaSql = `
+  -- Core library tables
   CREATE TABLE IF NOT EXISTS folders (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -31,6 +37,7 @@ export const schemaSql = `
     created_at TEXT NOT NULL
   );
 
+  -- position is a REAL for gap-based ordering (1024, 2048, ...) allowing insert-between
   CREATE TABLE IF NOT EXISTS pages (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -49,6 +56,7 @@ export const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  -- Annotation update audit log for conflict resolution
   CREATE TABLE IF NOT EXISTS page_updates (
     id TEXT PRIMARY KEY,
     page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -68,6 +76,7 @@ export const schemaSql = `
     value TEXT NOT NULL
   );
 
+  -- Indexes for common query patterns
   CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents (folder_id);
   CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents (updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_files_document ON files (document_id);
@@ -75,12 +84,14 @@ export const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_page_updates_page_created ON page_updates (page_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_page_updates_document_created ON page_updates (document_id, created_at DESC);
 
+  -- Full-text search for page content (base PDF text + annotation text)
   CREATE VIRTUAL TABLE IF NOT EXISTS page_search_fts USING fts5(
     page_id UNINDEXED,
     document_id UNINDEXED,
     content
   );
 
+  -- Activity tracking tables
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
@@ -110,7 +121,7 @@ export const schemaSql = `
 
   CREATE INDEX IF NOT EXISTS idx_sessions_user_start ON activity_sessions (user_id, started_at);
   CREATE INDEX IF NOT EXISTS idx_sessions_doc_start ON activity_sessions (document_id, started_at);
-  CREATE INDEX IF NOT EXISTS idx_sessions_open ON activity_sessions (ended_at) WHERE ended_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_sessions_open ON activity_sessions (ended_at) WHERE ended_at IS NULL; -- partial index for reaper
   CREATE INDEX IF NOT EXISTS idx_sessions_device ON activity_sessions (device_id, started_at);
 
   CREATE TABLE IF NOT EXISTS activity_events (
@@ -154,6 +165,7 @@ export const schemaSql = `
 
   CREATE INDEX IF NOT EXISTS idx_chapters_document ON document_chapters (document_id, position);
 
+  -- Key-value store for activity tracking configuration
   CREATE TABLE IF NOT EXISTS activity_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Chapter management panel — add/edit/delete individual chapters or bulk-import
+  // from pasted text. Tracks which chapter the active page falls in.
   import { createEventDispatcher, onMount } from 'svelte';
   import type { DocumentChapter } from '@shared/contracts';
   import { fetchChapters, createChapter, updateChapter, deleteChapter } from '../activity';
@@ -166,9 +168,6 @@
         }
       }
 
-      if (!parsed) {
-        // Skip unparseable lines silently
-      }
     }
 
     return results;

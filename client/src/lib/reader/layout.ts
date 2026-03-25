@@ -1,3 +1,9 @@
+/**
+ * Page layout engine — computes absolute positions for every page shell based
+ * on stored page dimensions, viewport width, and zoom level. Also provides
+ * binary-search-based visible window calculation and active page detection.
+ */
+
 import type { PageRecord } from '@shared/contracts';
 
 export interface PageShellLayout {
@@ -21,7 +27,7 @@ export interface VisibleWindow {
   end: number;
 }
 
-// Compact = phones (< 720px viewport)
+/** Responsive padding tiers: compact (phones), medium (tablets), desktop. */
 function resolveLayoutPadding(viewportWidth: number): {
   topPadding: number;
   bottomPadding: number;
@@ -38,6 +44,7 @@ function resolveLayoutPadding(viewportWidth: number): {
 }
 
 export class ReaderLayoutEngine {
+  /** Compute absolute top/left/width/height and scale for every page. */
   build(pages: PageRecord[], viewportWidth: number, zoom: number): ReaderLayoutResult {
     const pad = resolveLayoutPadding(viewportWidth);
     const usableWidth = Math.max(320, viewportWidth - pad.horizontalPadding * 2);
@@ -70,6 +77,7 @@ export class ReaderLayoutEngine {
     };
   }
 
+  /** Return the index range of pages that overlap the visible scroll area (plus overscan). */
   getVisibleWindow(layout: ReaderLayoutResult, scrollTop: number, viewportHeight: number, overscan = 1): VisibleWindow {
     if (layout.pages.length === 0) {
       return { start: 0, end: -1 };
@@ -84,6 +92,7 @@ export class ReaderLayoutEngine {
     return { start, end };
   }
 
+  /** The page whose center is closest to the viewport center. */
   getActivePage(layout: ReaderLayoutResult, scrollTop: number, viewportHeight: number): number {
     if (layout.pages.length === 0) {
       return 0;
@@ -109,6 +118,7 @@ export class ReaderLayoutEngine {
     return bestIndex;
   }
 
+  /** Binary search: first page whose bottom edge is at or past the given y coordinate. */
   private findFirstPage(pages: PageShellLayout[], edge: number): number {
     let low = 0;
     let high = pages.length - 1;
@@ -128,6 +138,7 @@ export class ReaderLayoutEngine {
     return answer;
   }
 
+  /** Binary search: last page whose top edge is at or before the given y coordinate. */
   private findLastPage(pages: PageShellLayout[], edge: number): number {
     let low = 0;
     let high = pages.length - 1;

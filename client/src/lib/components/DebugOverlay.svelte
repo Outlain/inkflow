@@ -1,4 +1,5 @@
 <script lang="ts">
+  // Timestamped debug event log overlay. Only visible when debugTimeline is enabled.
   import { onMount } from 'svelte';
   import type { DebugEvent } from '@shared/contracts';
   import { debugTimeline } from '../debug';

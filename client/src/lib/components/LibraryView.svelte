@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Library browser — lists folders and documents, handles folder/notebook creation,
+  // PDF import, deletion, and links to activity dashboard and per-notebook stats.
   import { createEventDispatcher, onMount } from 'svelte';
   import { createFolder, createNotebook, deleteDocument, deleteFolder, fetchLibrary, importPdf } from '../api';
   import { logStudyEvent } from '../activity';
@@ -15,6 +17,8 @@
 
   const folderColors = ['#587fa1', '#2d8a6d', '#c87535', '#9a5b8b', '#8b6f46'];
   const coverColors = ['#315f85', '#2f7b7f', '#b85d3a', '#8062a8', '#6d8a42'];
+
+  // ── Component state ──
 
   let library: LibraryPayload = { folders: [], documents: [] };
   let loading = true;
@@ -52,6 +56,8 @@
     dot: 'Dot paper'
   };
 
+  // ── Data loading and user setup ──
+
   async function loadLibrary(): Promise<void> {
     loading = true;
     errorMessage = '';
@@ -86,6 +92,8 @@
   }
 
   onMount(loadLibrary);
+
+  // ── Folder and notebook creation ──
 
   function openFolderModal(): void {
     folderForm = {
@@ -172,6 +180,8 @@
     }
   }
 
+  // ── PDF import ──
+
   async function triggerImport(event: Event): Promise<void> {
     const target = event.currentTarget as HTMLInputElement;
     const file = target.files?.[0];
@@ -199,6 +209,8 @@
     selectedImportFolderId = folderId;
     filePicker?.click();
   }
+
+  // ── Deletion ──
 
   async function removeFolder(folderId: string): Promise<void> {
     if (!window.confirm('Delete this folder and every document inside it?')) {
@@ -236,6 +248,8 @@
     }
   }
 
+  // ── Modal helpers ──
+
   function closeModal(): void {
     modal = null;
   }
@@ -245,6 +259,8 @@
       closeModal();
     }
   }
+
+  // ── Derived values ──
 
   $: documentCount = library.documents.length;
   $: notebookCount = library.documents.filter((document) => document.kind === 'notebook').length;

@@ -1,3 +1,9 @@
+/**
+ * PDF import pipeline — moves uploaded files into permanent storage,
+ * extracts metadata/text via Poppler, creates DB records, and kicks off
+ * background preview generation and outline-to-chapter extraction.
+ */
+
 import path from 'node:path';
 import { nanoid } from 'nanoid';
 import { config } from '../config.js';
@@ -6,6 +12,7 @@ import { createImportedDocument, getDocumentBundle, type InsertPdfSourceInput } 
 import { createChapter } from './activityService.js';
 import { extractPdfMetadata, extractPdfOutline, extractPdfTextPages, finalizeUploadedPdf, preGenerateAllPreviews } from './pdfTools.js';
 
+/** Strips the .pdf extension from the filename to derive a document title. */
 function normalizePdfTitle(originalName: string): string {
   return originalName.replace(/\.pdf$/i, '').trim() || 'Imported PDF';
 }
@@ -19,6 +26,10 @@ function buildStorageTarget(): { storageKey: string; uploadPath: string } {
   };
 }
 
+/**
+ * Parses a human-readable page range string (e.g. "1-3, 5, 8-10") into
+ * sorted 0-based page indexes. Returns all pages if the input is empty.
+ */
 export function parsePageRange(pageRange: string, totalPages: number): number[] {
   const normalized = pageRange.trim();
   if (!normalized) {
@@ -55,6 +66,7 @@ export function parsePageRange(pageRange: string, totalPages: number): number[] 
   return [...pages].sort((left, right) => left - right);
 }
 
+/** Full PDF import: finalize file, extract metadata/text, create document + pages in DB. */
 export async function importPdfFromTemp(params: {
   tempPath: string;
   originalName: string;
@@ -89,9 +101,10 @@ export async function importPdfFromTemp(params: {
   // Fire-and-forget background preview generation
   void preGenerateAllPreviews(storageKey, uploadPath, metadata.pageCount).catch(() => undefined);
 
-  // Auto-extract PDF outline as chapters (fire-and-forget)
+  // Auto-extract PDF outline (table of contents) as chapters.
+  // Each outline entry becomes a chapter spanning from its page to the next entry's page.
   void extractPdfOutline(uploadPath).then((outline) => {
-    if (outline.length < 2) return; // Need at least 2 entries to form chapters
+    if (outline.length < 2) return;
     for (let i = 0; i < outline.length; i++) {
       const entry = outline[i];
       const nextEntry = outline[i + 1];
@@ -109,6 +122,7 @@ export async function importPdfFromTemp(params: {
   return getDocumentBundle(created.document.id);
 }
 
+/** Prepares PDF data for page insertion (used when adding PDF pages into an existing document). */
 export async function preparePdfInsertionFromTemp(params: {
   tempPath: string;
   originalName: string;

@@ -1,3 +1,8 @@
+/**
+ * Application entry point — registers the service worker, sets up global
+ * error handlers (with a startup-phase crash screen), and mounts the Svelte app.
+ */
+
 import './styles.css';
 import { mount } from 'svelte';
 import App from './App.svelte';

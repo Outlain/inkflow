@@ -1,3 +1,9 @@
+/**
+ * WebSocket pub/sub hub for real-time document sync. Clients subscribe by
+ * document ID and receive broadcast SyncEvents (page updates, structure changes).
+ * Automatically cleans up on socket close/error.
+ */
+
 import type { WebSocket } from '@fastify/websocket';
 import type { SyncEvent } from '../../../shared/src/contracts.js';
 

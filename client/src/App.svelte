@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Root application shell — routes between LibraryView and ReaderView,
+  // manages activity tracking sessions and network monitor initialization.
   import { onDestroy, onMount } from 'svelte';
   import DebugOverlay from './lib/components/DebugOverlay.svelte';
   import LibraryView from './lib/components/LibraryView.svelte';

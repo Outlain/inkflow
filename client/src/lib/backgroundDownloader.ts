@@ -1,11 +1,12 @@
-// Background pre-downloader for per-page PDFs.
-// On slow/medium connections, fetches per-page PDF URLs in priority order
-// (outward from the active page) so the service worker caches them.
-// Later renders hit the cache instead of the network.
-//
-// Uses `priority: 'low'` on all fetch calls so the browser naturally
-// serves the active page's PDF.js render and preview image first.
-// No manual pause/resume needed — Chrome handles the scheduling.
+/**
+ * Background pre-downloader for per-page PDFs.
+ * On slow/medium connections, fetches per-page PDF URLs in priority order
+ * (outward from the active page) so the service worker caches them.
+ * Later renders hit the cache instead of the network.
+ *
+ * Uses `priority: 'low'` on all fetch calls so the browser naturally
+ * serves the active page's PDF.js render and preview image first.
+ */
 
 import { getConnectionQuality } from './networkMonitor';
 

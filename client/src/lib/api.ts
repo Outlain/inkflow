@@ -1,3 +1,5 @@
+/** REST API client — typed wrappers around every backend endpoint. */
+
 import type {
   BookmarkPayload,
   CreateFolderInput,

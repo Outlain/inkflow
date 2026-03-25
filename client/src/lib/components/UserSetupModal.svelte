@@ -1,4 +1,6 @@
 <script lang="ts">
+  // First-run modal that creates the user profile (display name).
+  // Shown once when the library detects no user has been set up yet.
   import { createEventDispatcher } from 'svelte';
   import type { UserRecord } from '@shared/contracts';
   import { setupUser } from '../activity';

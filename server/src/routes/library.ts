@@ -1,9 +1,14 @@
+/**
+ * Library REST routes — CRUD for folders, documents, pages, files, search, and export.
+ * Handles multipart PDF uploads, annotation saves with WebSocket broadcast,
+ * per-page PDF extraction, preview images, and annotated SVG thumbnails.
+ */
+
 import fs from 'node:fs';
 import { rm, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import type { FastifyInstance } from 'fastify';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 import { lookup as mimeLookup } from 'mime-types';
 import { z } from 'zod';
@@ -44,6 +49,8 @@ import { importPdfFromTemp, preparePdfInsertionFromTemp } from '../services/pdfI
 import { ensureAllPreviewsExist, ensurePagePdf, ensurePdfPreviewImage } from '../services/pdfTools.js';
 import { renderAnnotatedThumbnailSvg } from '../services/thumbnailService.js';
 
+// ── Request validation schemas ──
+
 const folderSchema = z.object({
   title: z.string().trim().min(1).max(80),
   color: z.string().trim().min(4).max(32)
@@ -77,6 +84,9 @@ const savePageSchema = z.object({
   baseRevision: z.number().int().min(0)
 });
 
+// ── Multipart form helpers ──
+
+/** Extracts a string value from a multipart form field. */
 function stringField(field: unknown): string | null {
   const candidate = Array.isArray(field) ? field[0] : field;
   if (!candidate || typeof candidate !== 'object') {
@@ -146,6 +156,9 @@ async function cleanupStorageArtifacts(storageKeys: string[]): Promise<void> {
   );
 }
 
+// ── Response helpers ──
+
+/** Serves a PDF file with HTTP Range request support for streaming. */
 async function sendPdfContent(
   reply: {
     code: (statusCode: number) => typeof reply;
@@ -191,6 +204,7 @@ function sendValidationError(reply: { status: (code: number) => { send: (payload
   return reply.status(400).send({ error: message });
 }
 
+/** Scans all PDF files and regenerates any missing preview images. */
 async function repairMissingPreviews(): Promise<void> {
   const pdfFiles = getAllPdfFiles();
   for (const { storageKey, pageCount } of pdfFiles) {
@@ -200,13 +214,17 @@ async function repairMissingPreviews(): Promise<void> {
 }
 
 export async function registerLibraryRoutes(app: FastifyInstance): Promise<void> {
-  // Run on startup — fire and forget
+  // Repair missing preview images on startup (fire-and-forget)
   void repairMissingPreviews().catch(() => undefined);
+
+  // ── Admin ──
 
   app.post('/admin/repair-previews', async (_request, reply) => {
     void repairMissingPreviews().catch(() => undefined);
     return reply.send({ started: true });
   });
+
+  // ── Library and folder routes ──
 
   app.get('/library', async () => listLibrary());
 
@@ -279,6 +297,8 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       return reply.status(400).send({ error: error instanceof Error ? error.message : 'Could not export document.' });
     }
   });
+
+  // ── PDF import ──
 
   app.post('/documents/import-pdf', async (request, reply) => {
     let upload;
@@ -415,6 +435,8 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     }
   });
 
+  // ── Page operations ──
+
   app.delete('/pages/:pageId', async (request, reply) => {
     try {
       const { pageId } = request.params as { pageId: string };
@@ -469,6 +491,8 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       return reply.status(statusCode).send({ error: error instanceof Error ? error.message : 'Could not save annotations.' });
     }
   });
+
+  // ── File content and preview endpoints ──
 
   app.get('/files/:fileId/content', async (request, reply) => {
     try {

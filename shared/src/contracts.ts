@@ -1,3 +1,10 @@
+/**
+ * Shared TypeScript contracts between client and server.
+ * All API request/response shapes, database record types, and annotation models.
+ */
+
+// ── Core enums and type aliases ──
+
 export type DocumentKind = 'notebook' | 'pdf';
 export type PageKind = 'blank' | 'ruled' | 'grid' | 'dot' | 'pdf';
 export type NotebookTemplate = Extract<PageKind, 'blank' | 'ruled' | 'grid' | 'dot'>;
@@ -7,7 +14,10 @@ export type ShapeKind = 'rectangle' | 'ellipse' | 'triangle' | 'diamond';
 export type LineStyle = 'solid' | 'dashed' | 'dotted';
 export type LassoMode = 'rectangle' | 'freehand';
 export type LaserPointerMode = 'dot' | 'line';
+/** Whether annotation saves merge with existing data ('append') or overwrite ('replace'). */
 export type SaveMode = 'append' | 'replace';
+
+// ── Library records ──
 
 export interface FolderRecord {
   id: string;
@@ -57,6 +67,7 @@ export interface PageRecord {
   annotationText: string;
 }
 
+/** Full document payload returned when opening a document in the reader. */
 export interface DocumentBundle {
   document: DocumentSummary;
   files: FileRecord[];
@@ -65,6 +76,7 @@ export interface DocumentBundle {
 
 export type ImportPdfResult = DocumentBundle;
 
+/** Top-level library listing returned on initial load. */
 export interface LibraryPayload {
   folders: FolderRecord[];
   documents: DocumentSummary[];
@@ -84,6 +96,8 @@ export interface CreateNotebookInput {
   folderId: string | null;
   coverColor: string;
 }
+
+// ── Annotation types ──
 
 export interface PagePoint {
   x: number;
@@ -141,7 +155,10 @@ export interface ShapeAnnotation {
 }
 
 export type Annotation = StrokeAnnotation | TextAnnotation | ShapeAnnotation;
+/** Superset of Annotation that also includes sticky notes (only used in thumbnails). */
 export type PageAnnotation = Annotation | StickyNoteAnnotation;
+
+// ── Annotation save/load payloads ──
 
 export interface PageAnnotationsPayload {
   pageId: string;
@@ -184,6 +201,8 @@ export interface SearchResponse {
   results: SearchResult[];
 }
 
+// ── Page manipulation requests ──
+
 export interface InsertBlankPageRequest {
   anchorPageId: string;
   placement: 'before' | 'after';
@@ -195,6 +214,8 @@ export interface InsertPdfPagesRequest {
   placement: 'before' | 'after';
   pageRange: string;
 }
+
+// ── WebSocket sync events ──
 
 export type SyncEvent =
   | {
@@ -308,6 +329,8 @@ export interface EndSessionRequest {
   pageIndex?: number;
 }
 
+// ── Activity aggregation and reporting ──
+
 export interface LogActivityEventsRequest {
   events: Array<{
     sessionId?: string;
@@ -367,6 +390,8 @@ export interface ActivityConfigPayload {
   webhookEnabled: boolean;
 }
 
+// ── Chapter management ──
+
 export interface CreateChapterRequest {
   title: string;
   startPageIndex: number;
@@ -380,6 +405,8 @@ export interface UpdateChapterRequest {
   endPageIndex?: number;
   color?: string;
 }
+
+// ── Client-side debug overlay ──
 
 export interface DebugEvent {
   id: string;

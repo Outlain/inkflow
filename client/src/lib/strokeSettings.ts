@@ -1,3 +1,8 @@
+/**
+ * Pen/pencil/highlighter/eraser preset widths, size bounds, and stabilization
+ * settings. Persisted to localStorage so user customizations survive reloads.
+ */
+
 export type AdjustableStrokeTool = 'pen' | 'pencil' | 'highlighter' | 'eraser';
 export type EraserStrokeMode = 'whole' | 'partial';
 

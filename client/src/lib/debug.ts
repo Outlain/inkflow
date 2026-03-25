@@ -1,3 +1,5 @@
+/** Timestamped event log for the debug overlay. Enabled via ?inkflowDebug=1 or localStorage. */
+
 import type { DebugEvent } from '@shared/contracts';
 
 type Listener = (events: DebugEvent[]) => void;

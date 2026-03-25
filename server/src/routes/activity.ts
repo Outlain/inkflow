@@ -1,3 +1,8 @@
+/**
+ * Activity tracking REST routes — user setup, study/app session lifecycle,
+ * event logging, activity summaries, config management, data export, and chapters.
+ */
+
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -19,6 +24,8 @@ import {
   updateActivityConfig,
   updateChapter
 } from '../services/activityService.js';
+
+// ── Request validation schemas ──
 
 const setupSchema = z.object({
   displayName: z.string().trim().min(1).max(80)

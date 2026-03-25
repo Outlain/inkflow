@@ -1,4 +1,7 @@
 <script lang="ts">
+  // Single page shell — manages the skeleton -> preview -> canvas render pipeline,
+  // SVG annotation overlay, and all pointer/stylus input for drawing, erasing,
+  // shapes, lasso selection, text, sticky notes, and laser pointer tools.
   import { onDestroy, onMount } from 'svelte';
   import type {
     Annotation,
@@ -35,6 +38,8 @@
     type StrokePresetValues
   } from '../strokeSettings';
 
+  // ── Props ──
+
   export let layout: PageShellLayout;
   export let file: FileRecord | null = null;
   export let annotations: PageAnnotation[] = [];
@@ -67,6 +72,8 @@
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onSelectionChange: (pageId: string, annotationIds: string[]) => void = () => undefined;
   export let onPreviewAnnotationsChange: (pageId: string, annotations: PageAnnotation[] | null) => void = () => undefined;
+
+  // ── Internal state ──
 
   let canvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
@@ -114,6 +121,8 @@
         startShape: ShapeAnnotation;
       } = null;
 
+  // ── Layout and sizing helpers ──
+
   function templateClass(page: PageRecord): string {
     if (page.kind === 'pdf') return 'blank';
     return page.template ?? page.kind;
@@ -122,6 +131,8 @@
   function scaledWidth(width: number): number {
     return width * layout.scale;
   }
+
+  // ── Stroke and tool settings ──
 
   function currentStrokeWidth(): number {
     if (tool === 'highlighter') {
@@ -182,6 +193,8 @@
     return '';
   }
 
+  // ── Pointer coordinate mapping ──
+
   function pageCoordinates(event: PointerEvent): PagePoint[] {
     if (!interactionLayer) {
       return [];
@@ -196,6 +209,8 @@
       time: event.timeStamp
     }));
   }
+
+  // ── Stroke input pipeline (begin -> continue -> finish) ──
 
   function appendPoints(points: PagePoint[]): void {
     if (points.length === 0) {
@@ -360,6 +375,8 @@
     }
   }
 
+  // ── PDF segment rendering — pages render in thirds (top/middle/bottom) ──
+
   function visibleRenderSegments(): PdfRenderSegment[] {
     const pageTop = layout.top;
     const pageBottom = layout.top + layout.height;
@@ -522,6 +539,8 @@
     }
   }
 
+  // ── Pointer event handlers ──
+
   function handlePointerDown(event: PointerEvent): void {
     if (!pointerCanDraw(event)) {
       return;
@@ -680,6 +699,7 @@
     }
   }
 
+  // Low-latency stylus path — fires more often than pointermove on pen input
   function handlePointerRawUpdate(event: PointerEvent): void {
     if (activePointerId !== event.pointerId || event.pointerType !== 'pen') {
       return;
@@ -756,6 +776,8 @@
 
     clearPointerState();
   }
+
+  // ── Text and sticky note editing ──
 
   function addText(): void {
     if (tool !== 'text') {
@@ -853,6 +875,8 @@
     localSelectedAnnotationIds = nextIds;
     onSelectionChange(layout.page.id, nextIds);
   }
+
+  // ── Geometry utilities — hit testing, bounds, distance calculations ──
 
   function distanceSquared(a: PagePoint, b: PagePoint): number {
     const dx = a.x - b.x;
@@ -987,6 +1011,7 @@
     };
   }
 
+  // Uses a throwaway canvas + isPointInPath for accurate polygon containment testing
   function polygonContainsPoint(point: PagePoint, polygon: PagePoint[]): boolean {
     if (polygon.length < 3 || typeof document === 'undefined') {
       return false;
@@ -1081,6 +1106,8 @@
     );
   }
 
+  // ── Annotation move/selection gestures ──
+
   function moveAnnotation(annotation: PageAnnotation, dx: number, dy: number): PageAnnotation {
     if (annotation.type === 'stroke') {
       return {
@@ -1168,6 +1195,8 @@
 
     return [...points, { ...first }];
   }
+
+  // ── Shape tool — create, move, resize ──
 
   function createShapeFromPoints(start: PagePoint, end: PagePoint, id: string): ShapeAnnotation {
     const x = Math.min(start.x, end.x);
@@ -1268,6 +1297,8 @@
     };
   }
 
+  // ── Lifecycle ──
+
   onMount(() => {
     debugTimeline.log('shell-mounted', `Shell mounted for page ${layout.pageIndex + 1}`);
     interactionLayer?.addEventListener('pointerrawupdate', handlePointerRawUpdate, { passive: false });
@@ -1291,6 +1322,8 @@
     if (previewDeferTimer) { clearTimeout(previewDeferTimer); previewDeferTimer = null; }
     debugTimeline.log('shell-unmounted', `Shell unmounted for page ${layout.pageIndex + 1}`);
   });
+
+  // ── Reactive declarations ──
 
   $: displayAnnotations = previewAnnotations ?? annotations;
   $: onPreviewAnnotationsChange(layout.page.id, previewAnnotations);
@@ -1383,7 +1416,6 @@
       previewDeferTimer = setTimeout(() => { previewDeferred = false; previewDeferTimer = null; }, 200);
     }
   }
-
 
   $: if (layout.page.kind === 'pdf' && previewLoadedPageId !== layout.page.id) {
     previewLoaded = false;

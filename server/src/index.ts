@@ -1,3 +1,9 @@
+/**
+ * Fastify server entry point — registers plugins (compression, multipart, websocket),
+ * mounts API routes, serves the static client build in production, and proxies to Vite
+ * dev server in development. Also initializes the SQLite database and session reaper.
+ */
+
 import path from 'node:path';
 import Fastify from 'fastify';
 import fastifyCompress from '@fastify/compress';
@@ -14,6 +20,7 @@ import { startReaper } from './services/activityService.js';
 const devClientOrigin = 'http://127.0.0.1:5173';
 
 async function createServer() {
+  // Initialize the SQLite database (creates tables on first run)
   getDb();
 
   const app = Fastify({
@@ -21,8 +28,9 @@ async function createServer() {
     bodyLimit: config.maxUploadBytes
   });
 
+  // Compression must be registered before routes to wrap response streams
   await app.register(fastifyCompress, {
-    threshold: 1024 // compress responses > 1KB
+    threshold: 1024
   });
 
   await app.register(fastifyMultipart, {
@@ -33,15 +41,18 @@ async function createServer() {
   });
 
   await app.register(fastifyWebsocket);
+
+  // ── API routes ──
   await app.register(registerLibraryRoutes, { prefix: '/api' });
   await app.register(registerActivityRoutes, { prefix: '/api' });
   await app.register(registerRealtimeRoutes);
-
 
   app.get('/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString()
   }));
+
+  // ── Client serving ──
 
   if (isProduction) {
     const clientDist = path.resolve(process.cwd(), 'dist/client');
@@ -58,6 +69,7 @@ async function createServer() {
       })
     );
 
+    // SPA fallback: serve index.html for non-API GET requests
     app.setNotFoundHandler((request, reply) => {
       if (request.raw.method === 'GET' && !request.url.startsWith('/api') && !request.url.startsWith('/assets/')) {
         return reply.type('text/html').sendFile('index.html', clientDist, {
@@ -68,6 +80,7 @@ async function createServer() {
       return reply.status(404).send({ error: 'Not found.' });
     });
   } else {
+    // Dev mode: proxy non-API requests to the Vite dev server
     app.setNotFoundHandler(async (request, reply) => {
       const isPageRequest = request.raw.method === 'GET' || request.raw.method === 'HEAD';
       const isBackendRoute = request.url.startsWith('/api') || request.url.startsWith('/health') || request.url.startsWith('/ws/');
@@ -105,6 +118,7 @@ async function createServer() {
     });
   }
 
+  // Periodically close stale activity sessions that missed their end event
   startReaper();
 
   return app;

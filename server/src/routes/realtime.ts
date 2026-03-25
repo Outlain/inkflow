@@ -1,3 +1,5 @@
+/** WebSocket route for real-time document sync (annotation updates and structure changes). */
+
 import type { FastifyInstance } from 'fastify';
 import { documentSyncHub } from '../realtime/hub.js';
 

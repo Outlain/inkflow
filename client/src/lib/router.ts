@@ -1,3 +1,5 @@
+/** Client-side URL routing — maps between URL paths and app views (library / document). */
+
 export type AppRoute =
   | { name: 'library' }
   | {

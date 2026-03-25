@@ -1,8 +1,11 @@
 <script lang="ts">
+  // ── Imports ──────────────────────────────────────────────────────────
+
   import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
   import type {
     Annotation,
     DocumentBundle,
+    DocumentChapter,
     EditorTool,
     FileRecord,
     LineStyle,
@@ -14,7 +17,6 @@
     SyncEvent
   } from '@shared/contracts';
   import { getStudySession, logStudyEvent } from '../activity';
-  import type { DocumentChapter } from '@shared/contracts';
   import {
     deleteDocument,
     deletePage,
@@ -45,7 +47,6 @@
   import ThumbnailPreview from './ThumbnailPreview.svelte';
   import { ReaderLayoutEngine, type PageShellLayout, type ReaderLayoutResult, type VisibleWindow } from '../reader/layout';
   import {
-    DEFAULT_STROKE_PRESET_SETTINGS,
     STROKE_BOUNDS,
     cloneStrokePresetSettings,
     defaultStrokeStabilization,
@@ -65,7 +66,11 @@
     type StrokePresetSettings
   } from '../strokeSettings';
 
+  // ── Props ─────────────────────────────────────────────────────────────
+
   export let documentId: string;
+
+  // ── Interfaces ───────────────────────────────────────────────────────
 
   interface PageRuntimeState {
     annotations: Annotation[];
@@ -121,12 +126,13 @@
 
   type ReaderToolPanel = 'lasso' | 'write' | 'text' | 'shape' | 'sticky' | 'accessories' | 'laser' | 'hand';
 
+  // ── Constants ────────────────────────────────────────────────────────
+
   const dispatch = createEventDispatcher<{ close: void }>();
   const layoutEngine = new ReaderLayoutEngine();
   const zoomLevels = [0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3];
   const ZOOM_EPSILON = 0.001;
   const MAX_PAGE_HISTORY = 50;
-  const toolOrder: EditorTool[] = ['pen', 'pencil', 'highlighter', 'eraser', 'text', 'shape', 'hand'];
   const colorChips = ['#123f63', '#c74b35', '#2f8a78', '#8e5fa4', '#d48a2c', '#121212'];
   const GRAPHITE_COLOR = '#4a4f57';
   const DEFAULT_PEN_COLOR = colorChips[0];
@@ -149,15 +155,8 @@
   ];
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
   const clientId = createClientId();
-  const toolGlyphs: Record<EditorTool, string> = {
-    pen: '✐',
-    pencil: '✎',
-    highlighter: '',
-    eraser: '⌫',
-    text: 'T',
-    shape: '▭',
-    hand: '✋'
-  };
+
+  // ── State ─────────────────────────────────────────────────────────────
 
   let bundle: DocumentBundle | null = null;
   let loading = true;
@@ -213,9 +212,11 @@
   let pageStates: Record<string, PageRuntimeState> = {};
   let lastEditedPageId: string | null = null;
 
+  // Save queue: batches pending server writes per page
   const pendingSaves = new Map<string, SaveItem[]>();
   const drainingPages = new Set<string>();
 
+  // Scroll & gesture tracking
   let scrollFrame = 0;
   let scrollEndTimer = 0;
   let scrolling = false;
@@ -270,6 +271,8 @@
   let previewAnnotationsByPage: Record<string, PageAnnotation[] | null> = {};
   let thumbnailRenderVersionByPage: Record<string, number> = {};
 
+  // ── Reactive Derived Values ───────────────────────────────────────────
+
   $: zoomLabel = `${Math.round(zoom * 100)}%`;
   $: strokePopoverWidth = strokePopover && adjustableStrokeTool(strokePopover.tool) ? currentStrokePresetValue(adjustableStrokeTool(strokePopover.tool)!, strokePopover.preset) : 0;
   $: strokePopoverWidthLabel = formatStrokeWidth(strokePopoverWidth);
@@ -291,6 +294,8 @@
   $: currentPageAnnotationCount = currentPageRecord ? pageStates[currentPageRecord.id]?.annotations?.length ?? 0 : 0;
   $: lassoSelectionCount = currentPageRecord ? selectedAnnotationIdsByPage[currentPageRecord.id]?.length ?? 0 : 0;
   $: thumbnailSidebarPages = bundle?.pages.slice(Math.max(0, activePageIndex - 4), Math.min(bundle.pages.length, activePageIndex + 5)) ?? [];
+
+  // ── Page State Management ─────────────────────────────────────────────
 
   function defaultPageState(): PageRuntimeState {
     return {
@@ -372,21 +377,10 @@
     return currentPageRecord;
   }
 
+  // ── Tool & UI Label Helpers ──────────────────────────────────────────
+
   function currentZoomLabel(): string {
     return zoomLabel;
-  }
-
-  function compactSaveLabel(): string {
-    const label = globalSaveLabel();
-    if (label === 'Unsaved edits') {
-      return 'Unsaved';
-    }
-
-    if (label === 'Save issue') {
-      return 'Issue';
-    }
-
-    return label;
   }
 
   function toolLabel(tool: EditorTool): string {
@@ -395,10 +389,6 @@
     }
 
     return tool[0].toUpperCase() + tool.slice(1);
-  }
-
-  function toolGlyph(tool: EditorTool): string {
-    return toolGlyphs[tool];
   }
 
   function adjustableStrokeTool(tool: EditorTool): AdjustableStrokeTool | null {
@@ -465,36 +455,8 @@
     return 'Navigation options';
   }
 
-  function strokeSettingsButtonLabel(tool: EditorTool): string {
-    if (tool === 'pen' || tool === 'pencil') {
-      return `Open ${strokeToolLabel(tool)} options`;
-    }
-
-    if (tool === 'highlighter') {
-      return 'Open marker options';
-    }
-
-    if (tool === 'eraser') {
-      return 'Open eraser options';
-    }
-
-    if (tool === 'shape') {
-      return 'Open shape options';
-    }
-
-    if (tool === 'text') {
-      return 'Open text options';
-    }
-
-    return 'Open navigation options';
-  }
-
   function sizeButtonKey(tool: AdjustableStrokeTool, preset: number): string {
     return `${tool}:preset:${preset}`;
-  }
-
-  function toolButtonKey(tool: AdjustableStrokeTool): string {
-    return `${tool}:tool`;
   }
 
   function currentAdjustableStrokeTool(): AdjustableStrokeTool | null {
@@ -525,6 +487,8 @@
     return '#3c7c66';
   }
 
+  // ── Tool Panel Activation & Selection ──────────────────────────────────
+
   function panelForTool(tool: EditorTool): ReaderToolPanel {
     if (tool === 'hand') {
       return 'hand';
@@ -539,11 +503,6 @@
     }
 
     return 'write';
-  }
-
-  function activateToolPanel(panel: ReaderToolPanel): void {
-    activeToolPanel = activeToolPanel === panel ? null : panel;
-    closeStrokePopover();
   }
 
   function applyToolSelection(tool: EditorTool, target: HTMLElement | null = null): void {
@@ -601,6 +560,8 @@
     activeToolPanel = activeToolPanel === panel ? null : panel;
     closeStrokePopover();
   }
+
+  // ── Accessories (Timer, Ruler) ─────────────────────────────────────────
 
   function formatTimeKeeper(): string {
     const minutes = Math.floor(timeKeeperSeconds / 60);
@@ -676,6 +637,8 @@
     rulerGesture = null;
   }
 
+  // ── Lasso Selection ───────────────────────────────────────────────────
+
   function handleSelectionChange(pageId: string, annotationIds: string[]): void {
     selectedAnnotationIdsByPage = {
       ...selectedAnnotationIdsByPage,
@@ -716,12 +679,10 @@
     handleSelectionChange(current.id, []);
   }
 
+  // ── Stroke Popover & Preset Management ─────────────────────────────────
+
   function currentStrokePresetValue(tool: AdjustableStrokeTool, preset: number): number {
     return toolStrokeWidthFromSettings(strokePresetSettings, tool, preset);
-  }
-
-  function currentPopoverStrokeWidth(): number {
-    return strokePopoverWidth;
   }
 
   function currentStrokePopoverBounds(): { min: number; max: number; step: number } | null {
@@ -733,10 +694,6 @@
     const tool = currentAdjustableStrokeTool();
     const size = strokePresetIndicatorSize(strokePresetSettings, tool, preset);
     return `width:${size}px; height:${size}px;`;
-  }
-
-  function strokeSampleStyle(): string {
-    return strokePopoverSampleStyle;
   }
 
   function openStrokePopover(tool: EditorTool, preset: number, target: HTMLElement | null): void {
@@ -808,111 +765,6 @@
 
     suppressedClickKey = '';
     return true;
-  }
-
-  function selectRailAction(actionId: string, target: HTMLElement | null): void {
-    if (actionId === 'pencil') {
-      selectedTool = 'pencil';
-      selectedColor = GRAPHITE_COLOR;
-      selectedSize = 1;
-      strokeStabilization = QUICK_PENCIL_STABILIZATION;
-      activeToolPanel = 'write';
-      return;
-    }
-
-    if (actionId === 'pen') {
-      selectedTool = 'pen';
-      selectedColor = DEFAULT_PEN_COLOR;
-      selectedSize = 2;
-      strokeStabilization = defaultStrokeStabilization();
-      activeToolPanel = 'write';
-      return;
-    }
-
-    if (actionId === 'highlighter') {
-      selectedTool = 'highlighter';
-      selectedColor = DEFAULT_MARKER_COLOR;
-      selectedSize = 3;
-      strokeStabilization = QUICK_MARKER_STABILIZATION;
-      activeToolPanel = 'write';
-      return;
-    }
-
-    if (actionId === 'eraser') {
-      selectedTool = 'eraser';
-      activeToolPanel = 'write';
-      return;
-    }
-
-    if (actionId === 'text') {
-      selectedTool = 'text';
-      activeToolPanel = 'text';
-      return;
-    }
-
-    if (actionId === 'shape') {
-      selectedTool = 'shape';
-      activeToolPanel = 'shape';
-      return;
-    }
-
-    selectedTool = 'hand';
-    activeToolPanel = 'hand';
-  }
-
-  function isRailActionActive(actionId: string): boolean {
-    if (actionId === 'pencil') {
-      return selectedTool === 'pencil';
-    }
-
-    if (actionId === 'pen') {
-      return selectedTool === 'pen';
-    }
-
-    if (actionId === 'highlighter') {
-      return selectedTool === 'highlighter';
-    }
-
-    if (actionId === 'eraser') {
-      return selectedTool === 'eraser';
-    }
-
-    if (actionId === 'text') {
-      return selectedTool === 'text';
-    }
-
-    if (actionId === 'shape') {
-      return selectedTool === 'shape';
-    }
-
-    return selectedTool === 'hand';
-  }
-
-  function handleToolButtonClick(event: MouseEvent, tool: EditorTool): void {
-    const adjustableTool = adjustableStrokeTool(tool);
-    if (adjustableTool && shouldSuppressClick(toolButtonKey(adjustableTool))) {
-      return;
-    }
-
-    applyToolSelection(tool, event.currentTarget as HTMLElement | null);
-  }
-
-  function handleToolButtonPointerDown(event: PointerEvent, tool: EditorTool): void {
-    const adjustableTool = adjustableStrokeTool(tool);
-    if (!adjustableTool) {
-      return;
-    }
-
-    if (usesExplicitStrokeSettingsTrigger()) {
-      return;
-    }
-
-    scheduleStrokePopoverLongPress(event, adjustableTool, selectedSize, toolButtonKey(adjustableTool));
-  }
-
-  function openStrokePopoverFromContextMenu(event: MouseEvent, tool: EditorTool, preset: number): void {
-    event.preventDefault();
-    openStrokePopover(tool, preset, event.currentTarget as HTMLElement | null);
   }
 
   function handleSizePresetSelect(event: MouseEvent, preset: number): void {
@@ -1019,17 +871,12 @@
     strokePopoverWidth = toolStrokeWidthFromSettings(nextSettings, adjustableTool, strokePopover.preset);
   }
 
+  // ── Undo / Redo ──────────────────────────────────────────────────────
+
+  /** Push a snapshot onto a history stack, capping at MAX_PAGE_HISTORY */
   function nextHistoryStack(stack: Annotation[][], snapshot: Annotation[]): Annotation[][] {
     const next = [...stack, snapshot];
     return next.length > MAX_PAGE_HISTORY ? next.slice(next.length - MAX_PAGE_HISTORY) : next;
-  }
-
-  function canUndoCurrentPage(): boolean {
-    return canUndoAvailable;
-  }
-
-  function canRedoCurrentPage(): boolean {
-    return canRedoAvailable;
   }
 
   async function undoCurrentPage(): Promise<void> {
@@ -1110,6 +957,9 @@
     await replaceAnnotations(page.id, []);
   }
 
+  // ── Compact Mode / Viewport ───────────────────────────────────────────
+
+  /** Re-evaluate compact mode breakpoint and reset panel state on change */
   function syncViewportMode(): void {
     const nextCompactMode = typeof window !== 'undefined' ? window.innerWidth <= 1080 : false;
     if (nextCompactMode === compactMode) {
@@ -1154,16 +1004,13 @@
     compactHeaderShown = true;
   }
 
-  function compactPalette(): string[] {
-    const ordered = [selectedColor, ...colorChips.filter((color) => color !== selectedColor)];
-    return ordered.slice(0, 4);
-  }
-
   const sizePresets = [
     { value: 1, label: 'Small size', className: 'small' },
     { value: 2, label: 'Medium size', className: 'medium' },
     { value: 3, label: 'Large size', className: 'large' }
   ] as const;
+
+  // ── Thumbnail Helpers ─────────────────────────────────────────────────
 
   function thumbnailPreviewWidth(): number {
     const maxWidth = getNetworkConfig().maxThumbnailWidth;
@@ -1255,6 +1102,8 @@
     compactInspectorOpen = false;
     closeStrokePopover();
   }
+
+  // ── Zoom & Pinch Gestures ─────────────────────────────────────────────
 
   function touchDistance(first: Touch, second: Touch): number {
     const dx = second.clientX - first.clientX;
@@ -1358,6 +1207,8 @@
     });
   }
 
+  // ── Save & Sync ──────────────────────────────────────────────────────
+
   function globalSaveLabel(): string {
     const states = Object.values(pageStates);
     if (states.some((state) => state.saveError)) {
@@ -1375,6 +1226,7 @@
     return 'Saved';
   }
 
+  /** Write current page state to IndexedDB for local-first durability */
   async function persistDraft(pageId: string): Promise<void> {
     const state = ensurePageState(pageId);
 
@@ -1403,6 +1255,7 @@
     }
   }
 
+  /** Fetch annotations from server, merge with local draft if newer */
   async function loadPageState(pageId: string, force = false): Promise<void> {
     const state = ensurePageState(pageId);
     if ((state.loaded && !force) || state.loading || !bundle) {
@@ -1473,6 +1326,7 @@
     }
   }
 
+  // IndexedDB draft helpers — disable drafts for the session if any call fails
   async function safeReadDraft(pageId: string): Promise<PageDraftRecord | null> {
     if (!draftsAvailable) {
       return null;
@@ -1522,6 +1376,7 @@
     }
   }
 
+  /** Process queued saves for a page sequentially, stopping on error */
   async function drainSaves(pageId: string): Promise<void> {
     if (drainingPages.has(pageId) || !bundle) {
       return;
@@ -1605,6 +1460,9 @@
     void drainSaves(pageId);
   }
 
+  // ── Annotation Mutation (called by PageShell) ──────────────────────────
+
+  /** Add new annotations to a page (optimistic update + server save) */
   async function appendAnnotations(pageId: string, appended: Annotation[]): Promise<void> {
     const state = ensurePageState(pageId);
     const nextAnnotations = [...state.annotations, ...appended];
@@ -1650,6 +1508,9 @@
     });
   }
 
+  // ── Layout & Visibility ───────────────────────────────────────────────
+
+  /** Recompute which pages are in the viewport and which is "active" */
   function updateVisibleState(reason: string): void {
     if (!bundle || !scrollPane) {
       return;
@@ -1688,6 +1549,8 @@
     debugTimeline.log('layout-recalc', `${reason}: ${bundle.pages.length} pages at ${currentZoomLabel()}`);
     scheduleVisibleState(reason);
   }
+
+  // ── Document Loading ──────────────────────────────────────────────────
 
   async function loadDocument(): Promise<void> {
     if (!documentId) {
@@ -1734,6 +1597,7 @@
     }
   }
 
+  /** Swap in a new bundle after page insert/delete, preserving dirty state */
   async function replaceBundle(nextBundle: DocumentBundle, focusPageId?: string): Promise<void> {
     stopBackgroundDownload();
     bundle = nextBundle;
@@ -1775,6 +1639,8 @@
     }
   }
 
+  // ── Scroll & Page Navigation ──────────────────────────────────────────
+
   function scrollToPage(pageIndex: number, behavior: ScrollBehavior = 'smooth'): void {
     if (!scrollPane || !layout.pages[pageIndex]) {
       return;
@@ -1797,6 +1663,7 @@
     scheduleVisibleState('scroll-to-page');
   }
 
+  /** Lock/unlock scroll position while drawing to prevent drift */
   function setInkScrollLock(active: boolean): void {
     if (!scrollPane) {
       inkScrollLocked = active;
@@ -1873,6 +1740,8 @@
     scheduleVisibleState('scroll');
   }
 
+  // ── Touch Gesture Handlers ────────────────────────────────────────────
+
   function handleTouchStart(event: TouchEvent): void {
     touchGestureActive = true;
     if (touchMomentumActive) {
@@ -1924,6 +1793,9 @@
     touchGestureActive = false;
   }
 
+  // ── Zoom Controls ─────────────────────────────────────────────────────
+
+  /** Find the closest discrete zoom level for the current value */
   function resolveZoomLevelIndex(value: number): number {
     const exactIndex = zoomLevels.findIndex((level) => Math.abs(level - value) <= ZOOM_EPSILON);
     if (exactIndex !== -1) {
@@ -1968,6 +1840,8 @@
 
     scheduleZoomUpdate(1, 'zoom-reset', captureViewportCenterAnchor());
   }
+
+  // ── Page & Document Operations ─────────────────────────────────────────
 
   async function bookmarkCurrentPage(): Promise<void> {
     if (!bundle || !currentPage()) {
@@ -2079,6 +1953,8 @@
     }
   }
 
+  // ── Search ────────────────────────────────────────────────────────────
+
   async function runSearch(): Promise<void> {
     if (!bundle) {
       return;
@@ -2103,6 +1979,9 @@
     logStudyEvent('document.exported', bundle.document.id);
   }
 
+  // ── WebSocket Sync ────────────────────────────────────────────────────
+
+  /** Open a WebSocket for realtime page/document sync events */
   function connectSync(nextDocumentId: string): void {
     syncSocket?.close();
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2137,6 +2016,8 @@
       }
     };
   }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────
 
   onMount(() => {
     syncViewportMode();
@@ -2189,10 +2070,14 @@
     qualityUnsub?.();
   });
 
+  // ── Reactive Side-Effects ──────────────────────────────────────────────
+
+  // Re-load document when documentId prop changes externally
   $: if (documentId && documentId !== pendingLoadDocumentId) {
     void loadDocument();
   }
 
+  // Manage timekeeper interval lifecycle
   $: {
     window.clearInterval(timeKeeperTimer);
     if (timeKeeperVisible && timeKeeperRunning) {
@@ -2202,9 +2087,11 @@
     }
   }
 
+  // Slice page layouts for the currently visible viewport range
   $: visibleLayouts =
     visibleWindow.end >= visibleWindow.start ? layout.pages.slice(visibleWindow.start, visibleWindow.end + 1) : [];
 
+  // During scrolling, only load annotations for pages that already have data
   $: annotationLoadLayouts = scrolling || inkScrollLocked
     ? visibleLayouts.filter((pageLayout) => {
         const state = pageStates[pageLayout.page.id];
@@ -2212,6 +2099,7 @@
       })
     : visibleLayouts;
 
+  // Trigger annotation fetch for pages entering the visible window
   $: if (annotationLoadLayouts.length > 0) {
     annotationLoadLayouts.forEach((pageLayout) => {
       void loadPageState(pageLayout.page.id);
@@ -2239,6 +2127,7 @@
     updateActiveIndex(activePageIndex);
   }
 
+  /** Pre-cache per-page PDFs around the active page for fast navigation */
   async function prefetchAdjacentPages(centerIndex: number): Promise<void> {
     const quality = getConnectionQuality();
     // On slow/medium connections, wait for visible pages to finish rendering
@@ -2265,18 +2154,18 @@
     }
   }
 
+  // Persist stroke settings to localStorage whenever they change
   $: if (strokePresetSettingsLoaded) {
     saveStrokePresetSettings(strokePresetSettings);
   }
-
   $: if (eraserStrokeModeLoaded) {
     saveEraserStrokeMode(eraserStrokeMode);
   }
-
   $: if (strokeStabilizationLoaded) {
     saveStrokeStabilization(strokeStabilization);
   }
 
+  // Close stroke popover when the user switches to a different tool
   $: if (strokePopover && selectedTool !== strokePopover.tool) {
     closeStrokePopover();
   }
@@ -2294,8 +2183,10 @@
   <title>{bundle ? `${bundle.document.title} · Inkflow` : 'Inkflow Reader'}</title>
 </svelte:head>
 
+<!-- ═══ Hidden PDF File Input ═══ -->
 <input bind:this={insertPdfInput} class="hidden-input" type="file" accept="application/pdf,.pdf" on:change={handlePdfInsert} />
 
+<!-- ═══ Reader Screen Root ═══ -->
 <div
   bind:this={readerScreen}
   class:compact-header-open={compactMode && compactHeaderVisibleState}
@@ -2303,6 +2194,7 @@
   class="reader-screen"
   data-compact-header={compactMode && compactHeaderVisibleState ? 'shown' : 'hidden'}
 >
+  <!-- ═══ Header (compact mode only) ═══ -->
   {#if compactMode}
     <header class="reader-header compact-header">
       <div class="reader-header-row compact-row">
@@ -2342,6 +2234,7 @@
     </header>
   {/if}
 
+  <!-- ═══ Stroke Popover ═══ -->
   {#if strokePopoverBackdropVisible && strokePopover}
     <button aria-label="Close stroke settings" class="stroke-popover-backdrop" type="button" on:click={closeStrokePopover}></button>
   {/if}
@@ -2535,15 +2428,18 @@
     </div>
   {/if}
 
+  <!-- ═══ Error Banner ═══ -->
   {#if errorMessage}
     <div class="status-banner error reader-status">{errorMessage}</div>
   {/if}
 
+  <!-- ═══ Reader Body (sidebar + center + inspector) ═══ -->
   <div class="reader-body">
     {#if compactMode && (compactPagesOpen || compactInspectorOpen)}
       <button aria-label="Close panel" class="compact-panel-backdrop" type="button" on:click={closeCompactPanels}></button>
     {/if}
 
+    <!-- ═══ Thumbnail Sidebar ═══ -->
     <aside class:compact-panel={compactMode && compactPagesOpen} class="thumbnail-rail">
       <div class="rail-header">
         <strong>Pages</strong>
@@ -2593,12 +2489,14 @@
       {/if}
     </aside>
 
+    <!-- ═══ Center Pane (toolbar + canvas + page indicator) ═══ -->
     <section bind:this={centerPane} class="reader-center">
       {#if loading}
         <div class="reader-loading">Loading reader…</div>
       {:else if !bundle}
         <div class="reader-loading">Document unavailable.</div>
       {:else}
+        <!-- ═══ Drawing Toolbar ═══ -->
         <div class="reader-middle-bar" style={`--tool-accent:${currentToolAccent()};`}>
           <div class="middle-menu-strip" role="toolbar" aria-label="Drawing tools">
             {#each middleMenuItems as item}
@@ -2784,6 +2682,7 @@
           {/if}
         </div>
 
+        <!-- ═══ Accessory Overlays (Timer, Ruler) ═══ -->
         {#if timeKeeperVisible}
           <div class="timekeeper-overlay">
             <strong>{formatTimeKeeper()}</strong>
@@ -2804,6 +2703,7 @@
           </div>
         {/if}
 
+        <!-- ═══ Canvas / Page Area ═══ -->
         <div
           bind:this={scrollPane}
           class:ink-scroll-locked={inkScrollLocked}
@@ -2863,6 +2763,7 @@
       {/if}
     </section>
 
+    <!-- ═══ Inspector Panel ═══ -->
     <aside class:compact-panel={compactMode && compactInspectorOpen} class="inspector-rail">
       {#if bundle}
         {#if !compactMode}

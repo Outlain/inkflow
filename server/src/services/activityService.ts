@@ -1,3 +1,9 @@
+/**
+ * Activity and session tracking service — manages users, study/app sessions,
+ * page visits, activity events, streaks, aggregation queries, webhook delivery,
+ * and document chapter management. All state is persisted in SQLite.
+ */
+
 import { nanoid } from 'nanoid';
 import type {
   ActivityConfigPayload,
@@ -16,7 +22,7 @@ import type {
 import { getDb } from '../db/database.js';
 import { config } from '../config.js';
 
-// ── Helpers ──
+// ── Date helpers ──
 
 function now(): string {
   return new Date().toISOString();
@@ -216,6 +222,7 @@ export function ensureDefaultUserFromEnv(): UserRecord | null {
 
 // ── Session management ──
 
+/** Seconds of active time added per heartbeat. Must match the client's heartbeat interval. */
 const HEARTBEAT_INTERVAL_SECS = 30;
 
 export function startSession(params: {
@@ -372,6 +379,10 @@ function extendCurrentPageVisit(sessionId: string, addSecs: number): void {
 
 // ── Session reaper ──
 
+/**
+ * Closes sessions that haven't received a heartbeat within their idle timeout + 60s grace.
+ * Runs periodically via startReaper(). Sets ended_at to last_heartbeat_at (not current time).
+ */
 export function reapStaleSessions(): number {
   const db = getDb();
   const stale = db.prepare(`
@@ -582,9 +593,12 @@ function getDaySummary(userId: string, date: string): ActivityDaySummary {
   };
 }
 
+/**
+ * Calculates current and longest study streaks by walking distinct session dates
+ * backwards. A streak is only "current" if it includes today or yesterday.
+ */
 function calculateStreaks(userId: string): { current: number; longest: number } {
   const db = getDb();
-  // Get all dates with at least one study session, ordered DESC
   const rows = db.prepare(`
     SELECT DISTINCT date(started_at) as d FROM activity_sessions
     WHERE user_id = ? AND session_type = 'study'

@@ -1,3 +1,9 @@
+/**
+ * Core library business logic — CRUD for folders, documents, pages, files,
+ * full-text search, annotations, and bookmarks. All operations are synchronous
+ * SQLite transactions via better-sqlite3.
+ */
+
 import { nanoid } from 'nanoid';
 import type Database from 'better-sqlite3';
 import type {
@@ -22,6 +28,8 @@ import type {
 } from '../../../shared/src/contracts.js';
 import { getDb } from '../db/database.js';
 import { getDefaultUser } from './activityService.js';
+
+// ── SQLite row interfaces (snake_case DB columns -> camelCase via mappers) ──
 
 interface FolderRow {
   id: string;
@@ -78,6 +86,8 @@ interface SearchRow {
   snippet: string;
 }
 
+// ── Public input types ──
+
 export interface CreateImportedDocumentInput {
   title: string;
   folderId: string | null;
@@ -117,13 +127,18 @@ export interface PagePdfSource {
   sourcePageIndex: number;
 }
 
+// ── Utility helpers ──
+
 function now(): string {
   return new Date().toISOString();
 }
 
+/** Gap-based page ordering: pages at 1024, 2048, 3072... allows insert-between without renumbering. */
 function pagePosition(index: number): number {
   return (index + 1) * 1024;
 }
+
+// ── Row-to-record mappers (snake_case DB rows -> camelCase API records) ──
 
 function mapFolder(row: FolderRow): FolderRecord {
   return {
@@ -181,6 +196,8 @@ function mapPage(row: PageRow): PageRecord {
   };
 }
 
+// ── Annotation JSON serialization ──
+
 function parseAnnotations(raw: string): Annotation[] {
   try {
     const parsed = JSON.parse(raw);
@@ -193,6 +210,8 @@ function parseAnnotations(raw: string): Annotation[] {
 function writeAnnotations(annotations: Annotation[]): string {
   return JSON.stringify(annotations);
 }
+
+// ── Internal database helpers ──
 
 function touchFolder(db: Database.Database, folderId: string | null, updatedAt: string): void {
   if (!folderId) {
@@ -232,10 +251,14 @@ function getFileRow(db: Database.Database, fileId: string): FileRow {
   return row;
 }
 
+// ── Full-text search helpers ──
+
+/** Merges base PDF text with annotation text into a single searchable string. */
 function searchContent(baseText: string, annotationText: string): string {
   return `${baseText}\n${annotationText}`.replace(/\s+/g, ' ').trim();
 }
 
+/** Updates the FTS5 index for a single page. */
 function reindexPageSearch(db: Database.Database, row: Pick<PageRow, 'id' | 'document_id' | 'base_text' | 'annotation_text'>): void {
   db.prepare('DELETE FROM page_search_fts WHERE page_id = ?').run(row.id);
   const content = searchContent(row.base_text, row.annotation_text);
@@ -254,11 +277,15 @@ function rebuildDocumentSearch(db: Database.Database, documentId: string): void 
   }
 }
 
+// ── Page position management ──
+
+/** Syncs the documents.page_count column with the actual number of pages. */
 function normalizeCount(db: Database.Database, documentId: string): void {
   const row = db.prepare('SELECT COUNT(*) AS count FROM pages WHERE document_id = ?').get(documentId) as { count: number };
   db.prepare('UPDATE documents SET page_count = ?, updated_at = ? WHERE id = ?').run(row.count, now(), documentId);
 }
 
+/** Reassigns all page positions to clean 1024-spaced gaps. Called when gaps get too small. */
 function rebalanceDocumentPositions(db: Database.Database, documentId: string): PageRow[] {
   const rows = pageRowsForDocument(db, documentId);
   const statement = db.prepare('UPDATE pages SET position = ? WHERE id = ?');
@@ -268,6 +295,10 @@ function rebalanceDocumentPositions(db: Database.Database, documentId: string): 
   return pageRowsForDocument(db, documentId);
 }
 
+/**
+ * Computes gap-based positions for inserting `count` pages before/after an anchor page.
+ * Automatically rebalances if the gap between neighbors is too small.
+ */
 function computeInsertPositions(
   db: Database.Database,
   documentId: string,
@@ -307,6 +338,7 @@ function deleteSearchRowsForDocument(db: Database.Database, documentId: string):
   db.prepare('DELETE FROM page_search_fts WHERE document_id = ?').run(documentId);
 }
 
+/** Converts a user search string into an FTS5 MATCH expression (AND of quoted tokens). */
 function searchQuery(raw: string): string {
   const tokens = raw
     .trim()
@@ -316,9 +348,9 @@ function searchQuery(raw: string): string {
   return tokens.map((token) => `"${token}"`).join(' AND ');
 }
 
-function indexLookupMap(documentId: string): Map<string, PageRow> {
-  return new Map(pageRowsForDocument(getDb(), documentId).map((row) => [row.id, row]));
-}
+// ═══════════════════════════════════════════════════════════════════════
+// Public API — these functions are called from route handlers
+// ═══════════════════════════════════════════════════════════════════════
 
 export function listLibrary(): LibraryPayload {
   const db = getDb();
@@ -500,6 +532,7 @@ export function savePageAnnotations(input: SavePageRequest): SavePageResponse {
     const currentAnnotations = parseAnnotations(page.annotations_json);
     const currentRevision = page.annotation_revision;
 
+    // Optimistic concurrency: reject replace if client is stale
     if (input.mode === 'replace' && input.baseRevision !== currentRevision) {
       const error = new Error('Page revision conflict.');
       (error as Error & { statusCode?: number }).statusCode = 409;
@@ -510,6 +543,7 @@ export function savePageAnnotations(input: SavePageRequest): SavePageResponse {
     let mode: SaveMode = input.mode;
 
     if (input.mode === 'append') {
+      // Deduplicate: only add annotations the server hasn't seen yet
       const seen = new Set(currentAnnotations.map((annotation) => annotation.id));
       const appendOnly = input.annotations.filter((annotation) => !seen.has(annotation.id));
       nextAnnotations = [...currentAnnotations, ...appendOnly];
@@ -525,6 +559,7 @@ export function savePageAnnotations(input: SavePageRequest): SavePageResponse {
       WHERE id = ?
     `).run(annotationsJson, input.annotationText, nextRevision, timestamp, input.pageId);
 
+    // Record the update in the audit log for conflict resolution
     db.prepare(`
       INSERT INTO page_updates (
         id, page_id, document_id, mode, client_id, client_revision,
@@ -572,6 +607,7 @@ export function searchDocumentPages(documentId: string, query: string): SearchRe
     count: number;
   };
 
+  // Auto-rebuild the FTS index if pages are missing (e.g. after import)
   if (document.kind === 'pdf' && indexedCountRow.count < document.page_count) {
     rebuildDocumentSearch(db, documentId);
     indexedCountRow = db.prepare('SELECT COUNT(*) AS count FROM page_search_fts WHERE document_id = ?').get(documentId) as {
@@ -593,6 +629,7 @@ export function searchDocumentPages(documentId: string, query: string): SearchRe
   });
 
   try {
+    // FTS5 search with snippet extraction (column 2 = content, brackets for highlights)
     const rows = db
       .prepare(`
         SELECT page_id, snippet(page_search_fts, 2, '[', ']', '…', 18) AS snippet
@@ -623,6 +660,7 @@ export function searchDocumentPages(documentId: string, query: string): SearchRe
       results
     };
   } catch {
+    // FTS5 query syntax error — fall back to case-insensitive substring search
     const lower = trimmed.toLowerCase();
     const results: SearchResult[] = pages
       .map((page, pageIndex) => {
@@ -772,6 +810,7 @@ export function deletePage(pageId: string): DocumentBundle {
     db.prepare('DELETE FROM pages WHERE id = ?').run(pageId);
     db.prepare('DELETE FROM page_search_fts WHERE page_id = ?').run(pageId);
 
+    // If the deleted page was bookmarked, move bookmark to nearest neighbor
     const remaining = pageRowsForDocument(db, page.document_id);
     const document = getDocumentRow(db, page.document_id);
     if (document.bookmark_page_id === pageId) {
@@ -798,6 +837,7 @@ export function deletePage(pageId: string): DocumentBundle {
   return remove();
 }
 
+/** Deletes a document and returns its file storage keys for cleanup. */
 export function deleteDocument(documentId: string): string[] {
   const db = getDb();
   const storageKeys = (db.prepare('SELECT storage_key FROM files WHERE document_id = ?').all(documentId) as Array<{ storage_key: string }>).map(
@@ -813,6 +853,7 @@ export function deleteDocument(documentId: string): string[] {
   return storageKeys;
 }
 
+/** Deletes a folder and all its documents, returning storage keys for cleanup. */
 export function deleteFolder(folderId: string): string[] {
   const db = getDb();
   const documents = db.prepare('SELECT id FROM documents WHERE folder_id = ?').all(folderId) as Array<{ id: string }>;
@@ -848,6 +889,7 @@ export function getPageDocumentId(pageId: string): string {
   return getPageRow(getDb(), pageId).document_id;
 }
 
+/** Resolves a page's backing PDF file and 0-based page index within that file. */
 export function getPagePdfSource(pageId: string): PagePdfSource {
   const db = getDb();
   const page = getPageRow(db, pageId);
@@ -865,6 +907,7 @@ export function getPagePdfSource(pageId: string): PagePdfSource {
   };
 }
 
+/** Returns all PDF file records for preview repair on startup. */
 export function getAllPdfFiles(): Array<{ storageKey: string; pageCount: number }> {
   const db = getDb();
   return db.prepare(`

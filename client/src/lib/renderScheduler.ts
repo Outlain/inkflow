@@ -1,5 +1,8 @@
-// Central render scheduler — ensures the active page and nearby pages render
-// before pages further away, regardless of DOM order.
+/**
+ * Central render scheduler — ensures the active page and nearby pages render
+ * before pages further away, regardless of DOM order. Provides `waitForIdle()`
+ * so prefetch work can be deferred until priority renders complete.
+ */
 
 type RenderJob = {
   pageIndex: number;

@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Transient toast notification shown when network quality changes (slow/medium/fast).
+  // Auto-dismisses after 5 seconds.
   import { onDestroy, onMount } from 'svelte';
   import { onQualityToast, type QualityChangeEvent } from '../networkMonitor';
 

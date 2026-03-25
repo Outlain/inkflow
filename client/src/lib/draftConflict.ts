@@ -1,3 +1,8 @@
+/**
+ * Merge conflict resolution between local drafts and remote state.
+ * A dirty local draft wins when it has a higher revision or a newer timestamp.
+ */
+
 export interface DraftComparison {
   draftDirty: boolean;
   draftRevision: number;

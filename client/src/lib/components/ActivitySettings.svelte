@@ -1,4 +1,5 @@
 <script lang="ts">
+  // Modal dialog for configuring activity tracking: idle timeout, daily goal, and webhook.
   import { createEventDispatcher, onMount } from 'svelte';
   import type { ActivityConfigPayload } from '@shared/contracts';
   import { fetchActivityConfig, updateActivityConfig } from '../activity';
