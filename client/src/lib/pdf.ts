@@ -8,6 +8,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTas
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { FileRecord, PageRecord } from '@shared/contracts';
 import { getNetworkConfig, getConnectionQuality, recordThroughput } from './networkMonitor';
+import { getPublicRuntimeConfig } from './runtimeConfig';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -26,6 +27,11 @@ const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasEl
 const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
 // ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile
 const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
+
+function integerOrFallback(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
 
 export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
 
@@ -189,7 +195,10 @@ function touchCacheEntry(cacheKey: string): ImageBitmap | HTMLCanvasElement | nu
 }
 
 function cachePixelBudget(coarsePointer: boolean): number {
-  return coarsePointer ? TOUCH_RENDER_CACHE_PIXEL_BUDGET : DESKTOP_RENDER_CACHE_PIXEL_BUDGET;
+  const runtime = getPublicRuntimeConfig();
+  return coarsePointer
+    ? integerOrFallback(runtime.renderCacheTouchPixels, TOUCH_RENDER_CACHE_PIXEL_BUDGET)
+    : integerOrFallback(runtime.renderCacheDesktopPixels, DESKTOP_RENDER_CACHE_PIXEL_BUDGET);
 }
 
 /** Insert a rendered surface into the LRU cache, evicting oldest entries if over budget. */

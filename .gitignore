@@ -16,4 +16,5 @@ coverage/
 .idea/
 .claude/
 CLAUDE.md
+AGENTS.md
 build/

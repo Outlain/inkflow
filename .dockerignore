@@ -26,6 +26,7 @@ README.md
 RELEASE_GATES.md
 INTERNALS.md
 CLAUDE.md
+AGENTS.md
 docker-compose*.yml
 scripts
 

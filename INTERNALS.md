@@ -53,6 +53,13 @@ Quality **downgrades happen immediately** to protect the user. Quality **upgrade
 | Background pre-download | Off (not needed) | Active | Active |
 | Thumbnail annotation loading | Eager | Skipped | Skipped |
 
+The prefetch and preview radii are runtime-configurable through server environment variables:
+
+- `INKFLOW_PREFETCH_RADIUS_FAST|MEDIUM|SLOW`
+- `INKFLOW_PREVIEW_RADIUS_FAST|MEDIUM|SLOW`
+
+`INKFLOW_PREVIEW_RADIUS_FAST=all` means "no distance cutoff for eligible visible/working-set pages", not "eagerly fetch every preview in the document."
+
 ---
 
 ## Page Loading Pipeline
@@ -160,6 +167,11 @@ Rendered segments are cached as `ImageBitmap` (or fallback `HTMLCanvasElement`) 
 
 - Desktop: ~100M pixels (~400MB, ~34 full A4 pages at 2× DPR)
 - Touch devices: ~50M pixels (~200MB, ~17 pages)
+
+These defaults are runtime-configurable through:
+
+- `INKFLOW_RENDER_CACHE_DESKTOP_PIXELS`
+- `INKFLOW_RENDER_CACHE_TOUCH_PIXELS`
 
 When the budget is exceeded, the oldest cached surfaces are evicted (LRU). Cache hits skip PDF.js entirely — the cached bitmap is drawn directly to the canvas.
 

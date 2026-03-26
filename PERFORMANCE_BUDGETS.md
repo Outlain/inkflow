@@ -106,6 +106,17 @@ Preferred for very large textbook workloads:
 - Thumbnail and full-page rendering stay on separate queues.
 - Search is server-side for large documents.
 
+## Runtime Tuning
+
+The reader's cache and anticipation windows can be tuned at runtime with environment variables:
+
+- `INKFLOW_RENDER_CACHE_DESKTOP_PIXELS`
+- `INKFLOW_RENDER_CACHE_TOUCH_PIXELS`
+- `INKFLOW_PREFETCH_RADIUS_FAST|MEDIUM|SLOW`
+- `INKFLOW_PREVIEW_RADIUS_FAST|MEDIUM|SLOW`
+
+Defaults are chosen to keep the active page responsive before spending bandwidth or memory on speculative work.
+
 ## Instrumentation Requirements
 
 Budgets must be verified with instrumentation, not guesswork.

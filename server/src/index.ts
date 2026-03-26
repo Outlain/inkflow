@@ -52,6 +52,12 @@ async function createServer() {
     timestamp: new Date().toISOString()
   }));
 
+  app.get('/api/client-config', async (_request, reply) => {
+    return reply
+      .header('cache-control', 'no-store')
+      .send(config.publicClientConfig);
+  });
+
   // ── Client serving ──
 
   if (isProduction) {

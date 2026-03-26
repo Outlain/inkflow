@@ -103,6 +103,7 @@ What the default [`docker-compose.yml`](./docker-compose.yml) is doing:
 - `volumes: ./data:/app/data` is the single required persistent mount
 - `NODE_ENV`, `HOST`, `PORT`, and `DATA_DIR` make the runtime behavior explicit
 - `MAX_UPLOAD_BYTES` and `PDF_LINEARIZE_THRESHOLD_BYTES` are optional tuning values
+- `INKFLOW_RENDER_CACHE_*`, `INKFLOW_PREFETCH_RADIUS_*`, and `INKFLOW_PREVIEW_RADIUS_*` are optional reader tuning values
 - the `healthcheck` asks Docker to probe the app's `/health` endpoint from inside the container
 
 What each environment variable actually changes:
@@ -119,6 +120,14 @@ What each environment variable actually changes:
   This sets both Fastify's overall request body limit and the multipart file upload limit. In the current code, uploads larger than this are rejected before import.
 - `PDF_LINEARIZE_THRESHOLD_BYTES=25165824`
   This controls when Inkflow asks `qpdf` to linearize an uploaded PDF. Files smaller than the threshold are moved directly into storage; larger files go through `qpdf --linearize` first so range-based viewing works better on large documents.
+- `INKFLOW_RENDER_CACHE_DESKTOP_PIXELS=100000000`
+  Client-side rendered PDF surface cache budget for desktop-class devices. `100000000` pixels is about `400 MB` of raw RGBA surface memory before browser overhead.
+- `INKFLOW_RENDER_CACHE_TOUCH_PIXELS=50000000`
+  Same cache budget for touch devices. Lower by default to reduce iPad/mobile memory pressure.
+- `INKFLOW_PREFETCH_RADIUS_FAST=4`, `INKFLOW_PREFETCH_RADIUS_MEDIUM=1`, `INKFLOW_PREFETCH_RADIUS_SLOW=0`
+  How many pages around the active page Inkflow proactively warms for PDF access. Higher values improve likely next-page readiness but cost more network, CPU, and memory.
+- `INKFLOW_PREVIEW_RADIUS_FAST=all`, `INKFLOW_PREVIEW_RADIUS_MEDIUM=2`, `INKFLOW_PREVIEW_RADIUS_SLOW=1`
+  How far from the active page preview JPEGs are allowed to load. `all` means "no distance cutoff for visible/working-set pages", not "download previews for the whole document at once."
 
 How the healthcheck works:
 
@@ -155,7 +164,7 @@ services:
 
 Notes:
 
-- The app has built-in defaults for `HOST`, `PORT`, `DATA_DIR`, `MAX_UPLOAD_BYTES`, and `PDF_LINEARIZE_THRESHOLD_BYTES`.
+- The app has built-in defaults for `HOST`, `PORT`, `DATA_DIR`, `MAX_UPLOAD_BYTES`, `PDF_LINEARIZE_THRESHOLD_BYTES`, and the `INKFLOW_*` reader tuning variables above.
 - The container image also sets `NODE_ENV=production`, `HOST=0.0.0.0`, `PORT=3000`, and `DATA_DIR=/app/data`.
 - In practice, the only required pieces are the port mapping and the `./data:/app/data` mount.
 - Keeping the full compose file is still useful because it makes production behavior explicit, preserves the large-upload defaults, and keeps health reporting visible in Portainer.

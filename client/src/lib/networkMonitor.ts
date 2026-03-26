@@ -8,6 +8,8 @@
  * Downgrades apply immediately; upgrades require sustained improvement (hysteresis).
  */
 
+import { getPublicRuntimeConfig } from './runtimeConfig';
+
 export type ConnectionQuality = 'fast' | 'medium' | 'slow';
 
 export interface NetworkConfig {
@@ -29,29 +31,47 @@ export interface QualityChangeEvent {
   reason: string;
 }
 
-const QUALITY_CONFIGS: Record<ConnectionQuality, NetworkConfig> = {
-  fast: {
-    rangeChunkSize: 1024 * 1024,     // 1 MB
-    maxPreviewWidth: 960,
-    maxThumbnailWidth: 240,
-    prefetchRadius: 4,
-    previewRadius: Infinity          // all visible pages get previews
-  },
-  medium: {
-    rangeChunkSize: 256 * 1024,      // 256 KB
-    maxPreviewWidth: 480,
-    maxThumbnailWidth: 180,
-    prefetchRadius: 1,
-    previewRadius: 2                 // active ± 2 pages get previews
-  },
-  slow: {
-    rangeChunkSize: 128 * 1024,      // 128 KB (fewer round trips than 64K)
-    maxPreviewWidth: 480,            // preview IS the display, so keep it readable
-    maxThumbnailWidth: 120,
-    prefetchRadius: 0,               // no prefetching at all
-    previewRadius: 1                 // preview only for active page
+function coerceRadius(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function coercePreviewRadius(value: unknown, fallback: number | typeof Infinity): number {
+  if (value === 'all') {
+    return Infinity;
   }
-};
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function buildQualityConfigs(): Record<ConnectionQuality, NetworkConfig> {
+  const runtime = getPublicRuntimeConfig();
+
+  return {
+    fast: {
+      rangeChunkSize: 1024 * 1024,     // 1 MB
+      maxPreviewWidth: 960,
+      maxThumbnailWidth: 240,
+      prefetchRadius: coerceRadius(runtime.prefetchRadiusFast, 4),
+      previewRadius: coercePreviewRadius(runtime.previewRadiusFast, Infinity)
+    },
+    medium: {
+      rangeChunkSize: 256 * 1024,      // 256 KB
+      maxPreviewWidth: 480,
+      maxThumbnailWidth: 180,
+      prefetchRadius: coerceRadius(runtime.prefetchRadiusMedium, 1),
+      previewRadius: coercePreviewRadius(runtime.previewRadiusMedium, 2)
+    },
+    slow: {
+      rangeChunkSize: 128 * 1024,      // 128 KB (fewer round trips than 64K)
+      maxPreviewWidth: 480,            // preview IS the display, so keep it readable
+      maxThumbnailWidth: 120,
+      prefetchRadius: coerceRadius(runtime.prefetchRadiusSlow, 0),
+      previewRadius: coercePreviewRadius(runtime.previewRadiusSlow, 1)
+    }
+  };
+}
 
 const LOW_DATA_MODE_KEY = 'inkflow-low-data-mode';
 
@@ -393,7 +413,7 @@ export function getConnectionQuality(): ConnectionQuality {
 
 /** Get the current network config based on quality. */
 export function getNetworkConfig(): NetworkConfig {
-  return QUALITY_CONFIGS[currentQuality];
+  return buildQualityConfigs()[currentQuality];
 }
 
 /** Check if low data mode is manually enabled. */
@@ -415,7 +435,7 @@ export function setLowDataMode(mode: ConnectionQuality | null): void {
   const newQuality = resolveQuality();
   if (newQuality !== previous) {
     currentQuality = newQuality;
-    const config = QUALITY_CONFIGS[currentQuality];
+    const config = buildQualityConfigs()[currentQuality];
     const reason = mode ? 'Low Data Mode enabled' : 'Low Data Mode disabled';
 
     for (const listener of qualityListeners) {
@@ -448,5 +468,5 @@ export function onQualityToast(listener: ToastListener): () => void {
 
 /** Get config for a specific quality level. */
 export function getConfigForQuality(quality: ConnectionQuality): NetworkConfig {
-  return QUALITY_CONFIGS[quality];
+  return buildQualityConfigs()[quality];
 }

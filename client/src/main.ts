@@ -6,6 +6,7 @@
 import './styles.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
+import { initPublicRuntimeConfig } from './lib/runtimeConfig';
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => undefined);
@@ -82,8 +83,13 @@ const target = document.getElementById('app');
 
 let app: ReturnType<typeof mount> | null = null;
 
-if (target) {
+async function bootstrap(): Promise<void> {
+  if (!target) {
+    return;
+  }
+
   try {
+    await initPublicRuntimeConfig();
     app = mount(App, { target });
     queueMicrotask(() => {
       startupPhase = false;
@@ -92,5 +98,7 @@ if (target) {
     renderStartupError(error);
   }
 }
+
+void bootstrap();
 
 export default app;
