@@ -34,11 +34,22 @@ The app adapts its behavior based on detected connection speed. There are three 
    - `< 100 KB/s` → slow
    - `< 500 KB/s` → medium
    - `≥ 500 KB/s` → fast
-3. **Navigator.connection API** — `effectiveType`, `downlink`, `rtt`, and `type` from the browser's Network Information API (Chrome/Edge/Android only).
+3. **Startup probe** — on startup, the app fetches one or two small first-party probe payloads from `/api/network-probe` and classifies the connection before the reader has produced enough real traffic to stabilize the measured-throughput path.
+4. **Navigator.connection API** — `effectiveType`, `downlink`, `rtt`, `type`, and `saveData` from the browser's Network Information API when available. `saveData` forces an immediate `slow` seed.
 
 ### Hysteresis
 
-Quality **downgrades happen immediately** to protect the user. Quality **upgrades require 10 seconds of sustained improvement** before applying. This prevents flickering between quality levels on unstable connections.
+Quality **downgrades happen immediately** to protect the user. Quality **upgrades require 10 seconds of sustained improvement** before applying. This prevents flickering between quality levels on unstable connections while still letting the startup probe and later real traffic improve the initial guess.
+
+The library UI now also exposes the current detection source:
+
+- `manual override`
+- `measured traffic`
+- `startup probe`
+- `browser hint`
+- `default fallback`
+
+and includes a `Retest Network` action for cases where the device changes Wi-Fi, VPN, or hotspot state while the app is already open.
 
 ### What Each Quality Level Changes
 

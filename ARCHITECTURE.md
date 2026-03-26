@@ -101,74 +101,60 @@ This makes the design less bug-prone because:
 
 ## Repository Layout
 
-Planned module layout for the clean rebuild:
+Current repository layout:
 
 ```text
 /
   client/
     src/
-      app/
-      components/
-      engine/
-      routes/
-      styles/
-      types/
+      lib/
+        components/      # ReaderView, PageShell, LibraryView, popups, dashboards
+        reader/          # page layout helpers
+        *.ts             # network, pdf, annotations, drafts, scheduler, activity
+      App.svelte
+      main.ts
+      styles.css
+    public/
+    index.html
   server/
     src/
-      app/
-      db/
-      routes/
-      services/
-      ws/
-      utils/
+      db/                # schema and SQLite bootstrap
+      routes/            # library, activity, realtime, health/public config
+      services/          # import, export, thumbnails, PDF tooling, document logic
+      realtime/
+      lib/
+      index.ts
   shared/
     src/
-      contracts/
-      ids/
-      math/
-      time/
+      contracts.ts       # shared DTOs and type contracts
   scripts/
-  tests/
   data/                  # runtime-only in local dev, bind-mounted in Docker
+  README.md
+  INTERNALS.md
+  PERFORMANCE_BUDGETS.md
+  ARCHITECTURE.md
 ```
+
+Tests live alongside source as `*.test.ts` rather than in one top-level `tests/` directory.
 
 ## Module Boundaries
 
 ### Frontend
 
-`client/src/app`
-- Svelte application shell, route state, responsive layout mode, and app-level stores for non-hot-path state.
+`client/src/App.svelte`
+- Root shell, route switching, startup initialization, and top-level reader/library boundary.
 
-`client/src/components`
-- Library cards, folder list, document tiles, dialogs, sheets, toolbar controls, inspector sections.
+`client/src/lib/components`
+- Svelte UI surfaces such as `LibraryView.svelte`, `ReaderView.svelte`, `PageShell.svelte`, chapter manager, activity views, and network toast.
 
-`client/src/engine`
-- Pure imperative modules for hot paths. No Svelte reactivity inside these modules.
-
-Planned engine modules:
-
-- `ReaderSession.ts`
-  Creates and coordinates one open-document session.
-- `ShellLayout.ts`
-  Computes shell width and height from stored page metadata, viewport width, and zoom.
-- `VisibilityTracker.ts`
-  Computes visible page window and active page with throttled measurement.
-- `PdfRenderQueue.ts`
-  Manages visible-page renders, cancellation, and scroll-aware priority.
-- `ThumbnailQueue.ts`
-  Separate queue for thumbnails and side previews.
-- `InputRouter.ts`
-  Pointer event routing, stylus detection, palm rejection, finger-scroll separation.
-- `StrokeScene.ts`
-  Per-page live stroke model, canvas invalidation, append-only stroke snapshots.
-- `DraftStore.ts`
-  Local-first page draft persistence.
-- `SaveQueue.ts`
-  Background persistence without blocking input.
-- `SyncChannel.ts`
-  WebSocket subscription and conflict filtering.
-- `DebugEvents.ts`
-  Timestamped logs and optional overlay feed.
+`client/src/lib`
+- Imperative hot-path modules and supporting logic:
+  - `pdf.ts` — PDF.js loading, segment rendering, render cache
+  - `networkMonitor.ts` — quality detection, startup probe, browser hints, override logic
+  - `renderScheduler.ts` — active-page-first render ordering
+  - `annotations.ts` — stroke/shape/lasso/eraser logic
+  - `drafts.ts` / `activity.ts` — local-first persistence and study activity
+  - `reader/layout.ts` — fixed page shell layout calculations
 
 ### Backend
 
@@ -189,11 +175,11 @@ Planned engine modules:
 - `authService`
 - `syncService`
 
-`server/src/ws`
-- WebSocket connection registry, presence/status messages, document-scoped broadcast.
+`server/src/realtime`
+- WebSocket hub and document-scoped broadcast.
 
-`shared/src/contracts`
-- Request and response shapes, DTOs, validation schemas, shared enums.
+`shared/src/contracts.ts`
+- Request and response shapes, DTOs, validation schemas, and shared enums.
 
 ## Non-Negotiable Reader Model
 

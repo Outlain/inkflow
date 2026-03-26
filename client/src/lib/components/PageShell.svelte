@@ -450,14 +450,26 @@
   }
 
   function fullRenderSegments(): PdfRenderSegment[] {
+    if (!useSegmentedPdfRender()) {
+      return ['full'];
+    }
+
     return ['top', 'middle', 'bottom'];
   }
 
   function targetRenderSegments(): PdfRenderSegment[] {
+    if (!useSegmentedPdfRender()) {
+      return ['full'];
+    }
+
     // Only render the segments actually in the viewport, even for the active page.
     // The active page gets ALL segments eventually via eager follow-up below, but
     // the initial render only covers what's visible so isReady fires faster.
     return visibleRenderSegments();
+  }
+
+  function useSegmentedPdfRender(): boolean {
+    return getConnectionQuality() !== 'slow';
   }
 
   function segmentKey(scaleKey: string, segment: PdfRenderSegment): string {
@@ -468,7 +480,11 @@
     return renderedSegments.has(segmentKey(scaleKey, segment));
   }
 
-  function canvasForSegment(segment: Exclude<PdfRenderSegment, 'full'>): HTMLCanvasElement | null {
+  function canvasForSegment(segment: PdfRenderSegment): HTMLCanvasElement | null {
+    if (segment === 'full') {
+      return topCanvas;
+    }
+
     if (segment === 'top') {
       return topCanvas;
     }
@@ -504,7 +520,11 @@
     return `top:${top}px; height:${height}px;`;
   }
 
-  function segmentReady(segment: Exclude<PdfRenderSegment, 'full'>): boolean {
+  function fullCanvasStyle(): string {
+    return 'top:0; height:100%;';
+  }
+
+  function segmentReady(segment: PdfRenderSegment): boolean {
     if (layout.page.kind !== 'pdf' || !renderedScaleKey) {
       return false;
     }
@@ -557,7 +577,11 @@
   }
 
   async function renderPdfIfNeeded(): Promise<void> {
-    if (!topCanvas || !middleCanvas || !bottomCanvas || !file || layout.page.kind !== 'pdf') {
+    if (!topCanvas || !file || layout.page.kind !== 'pdf') {
+      return;
+    }
+
+    if (useSegmentedPdfRender() && (!middleCanvas || !bottomCanvas)) {
       return;
     }
 
@@ -606,7 +630,7 @@
           file,
           scale: layout.scale,
           segment,
-          segmentCanvas: true
+          segmentCanvas: segment !== 'full'
         });
 
         if (token !== renderToken) {
@@ -640,7 +664,7 @@
               file,
               scale: layout.scale,
               segment,
-              segmentCanvas: true
+              segmentCanvas: segment !== 'full'
             });
             if (token !== renderToken) break;
             renderedSegments = new Set(renderedSegments).add(segmentKey(nextScaleKey, segment));
@@ -1685,7 +1709,7 @@
   // All connection speeds get full-res PDF.js rendering. On slow/medium,
   // the per-page PDF endpoint provides a self-contained ~100-500KB file
   // that downloads in one request. No dwell delay needed.
-  $: if (topCanvas && middleCanvas && bottomCanvas && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
+  $: if (topCanvas && (!useSegmentedPdfRender() || (middleCanvas && bottomCanvas)) && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
     scheduleRender(
       layout.page.id,
       layout.pageIndex,
@@ -1780,24 +1804,33 @@
           src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
         />
       {/if}
-      <canvas
-        bind:this={topCanvas}
-        class:ready={segmentReady('top')}
-        class="reader-pdf-canvas reader-pdf-canvas-top"
-        style={segmentCanvasStyle('top')}
-      ></canvas>
-      <canvas
-        bind:this={middleCanvas}
-        class:ready={segmentReady('middle')}
-        class="reader-pdf-canvas reader-pdf-canvas-middle"
-        style={segmentCanvasStyle('middle')}
-      ></canvas>
-      <canvas
-        bind:this={bottomCanvas}
-        class:ready={segmentReady('bottom')}
-        class="reader-pdf-canvas reader-pdf-canvas-bottom"
-        style={segmentCanvasStyle('bottom')}
-      ></canvas>
+      {#if useSegmentedPdfRender()}
+        <canvas
+          bind:this={topCanvas}
+          class:ready={segmentReady('top')}
+          class="reader-pdf-canvas reader-pdf-canvas-top"
+          style={segmentCanvasStyle('top')}
+        ></canvas>
+        <canvas
+          bind:this={middleCanvas}
+          class:ready={segmentReady('middle')}
+          class="reader-pdf-canvas reader-pdf-canvas-middle"
+          style={segmentCanvasStyle('middle')}
+        ></canvas>
+        <canvas
+          bind:this={bottomCanvas}
+          class:ready={segmentReady('bottom')}
+          class="reader-pdf-canvas reader-pdf-canvas-bottom"
+          style={segmentCanvasStyle('bottom')}
+        ></canvas>
+      {:else}
+        <canvas
+          bind:this={topCanvas}
+          class:ready={segmentReady('full')}
+          class="reader-pdf-canvas reader-pdf-canvas-full"
+          style={fullCanvasStyle()}
+        ></canvas>
+      {/if}
     {:else}
       <div class={`reader-template-layer ${templateClass(layout.page)}`}></div>
     {/if}

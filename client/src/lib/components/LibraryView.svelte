@@ -9,7 +9,7 @@
   import ActivitySettings from './ActivitySettings.svelte';
   import NotebookStatsPopup from './NotebookStatsPopup.svelte';
   import UserSetupModal from './UserSetupModal.svelte';
-  import { isLowDataMode, setLowDataMode, getConnectionQuality } from '../networkMonitor';
+  import { isLowDataMode, setLowDataMode, getConnectionQuality, getDetectionSource, retestNetworkQuality, onQualityChange } from '../networkMonitor';
 
   const dispatch = createEventDispatcher<{ openDocument: { documentId: string }; toggleBrowserSafeTopbar: { enabled: boolean } }>();
 
@@ -34,6 +34,9 @@
   let statsDocumentTitle: string = '';
   let showSettings = false;
   let lowDataMode = isLowDataMode();
+  let networkRetesting = false;
+  let currentNetworkQuality = getConnectionQuality();
+  let detectionSource = getDetectionSource();
   let filePicker: HTMLInputElement | null = null;
   let selectedImportFolderId: string | null = null;
 
@@ -92,7 +95,16 @@
     statsDocumentTitle = '';
   }
 
-  onMount(loadLibrary);
+  onMount(() => {
+    void loadLibrary();
+
+    const unsubscribe = onQualityChange((quality) => {
+      currentNetworkQuality = quality;
+      detectionSource = getDetectionSource();
+    });
+
+    return unsubscribe;
+  });
 
   // ── Folder and notebook creation ──
 
@@ -267,6 +279,25 @@
   $: notebookCount = library.documents.filter((document) => document.kind === 'notebook').length;
   $: pdfCount = library.documents.filter((document) => document.kind === 'pdf').length;
   $: sortedDocuments = [...library.documents].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  function detectionSourceLabel(source: string): string {
+    if (source === 'manual') return 'manual override';
+    if (source === 'measured') return 'measured traffic';
+    if (source === 'probe') return 'startup probe';
+    if (source === 'navigator') return 'browser hint';
+    return 'default fallback';
+  }
+
+  async function handleRetestNetwork(): Promise<void> {
+    networkRetesting = true;
+    try {
+      await retestNetworkQuality();
+      currentNetworkQuality = getConnectionQuality();
+      detectionSource = getDetectionSource();
+      statusMessage = `Retested network. Current mode: ${currentNetworkQuality}.`;
+    } finally {
+      networkRetesting = false;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -361,8 +392,14 @@
     <section class="panel">
       <div class="panel-row" style="gap: 8px; align-items: center;">
         <span class="network-quality-label">
-          Network: <strong>{getConnectionQuality()}</strong>
+          Network: <strong>{currentNetworkQuality}</strong>
         </span>
+        <span class="network-quality-label">
+          Source: <strong>{detectionSourceLabel(detectionSource)}</strong>
+        </span>
+        <button class="button subtle" type="button" disabled={networkRetesting} on:click={handleRetestNetwork}>
+          {networkRetesting ? 'Retesting…' : 'Retest Network'}
+        </button>
         <button
           class="button subtle"
           class:active={lowDataMode}

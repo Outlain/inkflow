@@ -52,6 +52,18 @@ async function createServer() {
     timestamp: new Date().toISOString()
   }));
 
+  app.get('/api/network-probe', async (request, reply) => {
+    const requestedBytes = Number((request.query as { bytes?: string } | undefined)?.bytes);
+    const byteCount = Number.isFinite(requestedBytes)
+      ? Math.max(32 * 1024, Math.min(256 * 1024, Math.floor(requestedBytes)))
+      : 128 * 1024;
+
+    return reply
+      .header('cache-control', 'no-store')
+      .type('application/octet-stream')
+      .send(Buffer.alloc(byteCount, 48));
+  });
+
   app.get('/api/client-config', async (_request, reply) => {
     return reply
       .header('cache-control', 'no-store')

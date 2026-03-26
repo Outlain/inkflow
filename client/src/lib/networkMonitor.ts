@@ -1,9 +1,10 @@
 /**
  * Network quality monitor — detects connection speed and adapts app behavior.
- * Uses three signal layers (strongest first):
- *   1. PerformanceObserver — measures real transferSize + duration of HTTP requests
- *   2. Navigator.connection API — effectiveType, downlink, rtt (Chrome/Edge/Android)
- *   3. Manual "Low Data Mode" override persisted in localStorage
+ * Uses four signal layers (strongest first):
+ *   1. Manual "Low Data Mode" override persisted in localStorage
+ *   2. PerformanceObserver — measures real transferSize + duration of HTTP requests
+ *   3. Startup probe — fetches one or two small first-party payloads to classify early
+ *   4. Navigator.connection API — effectiveType, downlink, rtt, saveData (when available)
  *
  * Downgrades apply immediately; upgrades require sustained improvement (hysteresis).
  */
@@ -30,6 +31,8 @@ export interface QualityChangeEvent {
   current: ConnectionQuality;
   reason: string;
 }
+
+export type DetectionSource = 'manual' | 'measured' | 'probe' | 'navigator' | 'default';
 
 function coerceRadius(value: unknown, fallback: number): number {
   const parsed = Number(value);
@@ -84,6 +87,10 @@ let qualityListeners: QualityListener[] = [];
 let toastListeners: ToastListener[] = [];
 let initialized = false;
 let perfObserver: PerformanceObserver | null = null;
+let startupProbeQuality: ConnectionQuality | null = null;
+let startupProbeMedianBytesPerSec = 0;
+let startupProbeRan = false;
+let detectionSource: DetectionSource = 'default';
 
 // Measured throughput samples (bytes per second)
 const throughputSamples: number[] = [];
@@ -98,6 +105,7 @@ const UPGRADE_HOLD_MS = 10_000;    // 10 seconds of sustained improvement
 let pendingUpgrade: ConnectionQuality | null = null;
 let upgradeTimer: ReturnType<typeof setTimeout> | null = null;
 const FAILURE_DECAY_MS = 30_000;
+const STARTUP_PROBE_SIZES = [96 * 1024, 192 * 1024];
 
 function loadManualOverride(): void {
   try {
@@ -185,6 +193,7 @@ interface NavigatorConnectionInfo {
   effectiveType?: string;
   downlink?: number;
   rtt?: number;
+  saveData?: boolean;
   type?: string;  // 'wifi', 'cellular', 'bluetooth', 'ethernet', etc.
 }
 
@@ -195,6 +204,7 @@ function getNavigatorConnection(): NavigatorConnectionInfo | null {
     effectiveType: conn.effectiveType,
     downlink: conn.downlink,
     rtt: conn.rtt,
+    saveData: conn.saveData,
     type: conn.type
   };
 }
@@ -203,7 +213,11 @@ function detectFromNavigator(): ConnectionQuality | null {
   const conn = getNavigatorConnection();
   if (!conn) return null;
 
-  const { effectiveType, downlink, rtt, type } = conn;
+  const { effectiveType, downlink, rtt, saveData, type } = conn;
+
+  if (saveData) {
+    return 'slow';
+  }
 
   // Connection type: cellular data starts at 'medium' by default,
   // can be upgraded if measured speed is actually good
@@ -256,8 +270,16 @@ function buildChangeReason(quality: ConnectionQuality): string {
     return `Fast connection (${speedKBs} KB/s)`;
   }
 
+  if (startupProbeQuality && startupProbeMedianBytesPerSec > 0) {
+    const speedKBs = Math.round(startupProbeMedianBytesPerSec / 1024);
+    if (quality === 'slow') return `Startup probe detected slow connection (${speedKBs} KB/s)`;
+    if (quality === 'medium') return `Startup probe detected moderate connection (${speedKBs} KB/s)`;
+    return `Startup probe detected fast connection (${speedKBs} KB/s)`;
+  }
+
   // Navigator API drove the decision
   if (conn) {
+    if (conn.saveData) return 'Data saver enabled';
     const networkType = conn.type;
     if (networkType === 'cellular') return 'Cellular data detected';
     if (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g') return 'Very slow network (2G)';
@@ -268,6 +290,14 @@ function buildChangeReason(quality: ConnectionQuality): string {
   }
 
   return quality === 'fast' ? 'Connection improved' : 'Slow connection detected';
+}
+
+function resolveDetectionSource(): DetectionSource {
+  if (manualOverride) return 'manual';
+  if (qualityFromThroughput()) return 'measured';
+  if (startupProbeQuality) return 'probe';
+  if (detectFromNavigator()) return 'navigator';
+  return 'default';
 }
 
 // ---------------------------------------------------------------------------
@@ -293,12 +323,69 @@ function qualityFromThroughput(): ConnectionQuality | null {
   return 'fast';
 }
 
+function qualityFromProbe(bytesPerSec: number, durationMs: number): ConnectionQuality {
+  if (durationMs > 2500 || bytesPerSec < 120_000) return 'slow';
+  if (durationMs > 900 || bytesPerSec < 600_000) return 'medium';
+  return 'fast';
+}
+
+async function runStartupProbe(): Promise<void> {
+  if (startupProbeRan || typeof window === 'undefined' || typeof fetch === 'undefined') {
+    return;
+  }
+
+  startupProbeRan = true;
+  const samples: number[] = [];
+  const durations: number[] = [];
+
+  for (const size of STARTUP_PROBE_SIZES) {
+    const start = performance.now();
+
+    try {
+      const response = await fetch(`/api/network-probe?bytes=${size}&t=${Date.now()}-${Math.random()}`, {
+        cache: 'no-store'
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const buffer = await response.arrayBuffer();
+      const durationMs = Math.max(1, performance.now() - start);
+      const bytes = Math.max(buffer.byteLength, size);
+      const bytesPerSec = (bytes / durationMs) * 1000;
+
+      samples.push(bytesPerSec);
+      durations.push(durationMs);
+      recordThroughput(bytes, durationMs);
+    } catch {
+      recordFailure();
+      break;
+    }
+  }
+
+  if (samples.length === 0) {
+    return;
+  }
+
+  const sortedSpeeds = [...samples].sort((a, b) => a - b);
+  const sortedDurations = [...durations].sort((a, b) => a - b);
+  const medianBytesPerSec = sortedSpeeds[Math.floor(sortedSpeeds.length / 2)];
+  const medianDurationMs = sortedDurations[Math.floor(sortedDurations.length / 2)];
+
+  startupProbeMedianBytesPerSec = medianBytesPerSec;
+  startupProbeQuality = qualityFromProbe(medianBytesPerSec, medianDurationMs);
+  updateQuality();
+}
+
 function resolveQuality(): ConnectionQuality {
   if (manualOverride) return manualOverride;
 
   // Prefer measured throughput — it's the most accurate signal
   const measured = qualityFromThroughput();
   if (measured) return measured;
+
+  if (startupProbeQuality) return startupProbeQuality;
 
   // Fall back to Navigator API
   const navigatorQuality = detectFromNavigator();
@@ -316,7 +403,8 @@ function qualityRank(q: ConnectionQuality): number {
 function applyQualityChange(newQuality: ConnectionQuality): void {
   const previous = currentQuality;
   currentQuality = newQuality;
-  const config = QUALITY_CONFIGS[currentQuality];
+  detectionSource = resolveDetectionSource();
+  const config = buildQualityConfigs()[currentQuality];
   const reason = buildChangeReason(currentQuality);
 
   for (const listener of qualityListeners) {
@@ -331,7 +419,26 @@ function applyQualityChange(newQuality: ConnectionQuality): void {
 
 function updateQuality(): void {
   const newQuality = resolveQuality();
+  const newSource = resolveDetectionSource();
   if (newQuality === currentQuality) {
+    if (newSource !== detectionSource) {
+      detectionSource = newSource;
+      const config = buildQualityConfigs()[currentQuality];
+      const event: QualityChangeEvent = {
+        previous: currentQuality,
+        current: currentQuality,
+        reason: buildChangeReason(currentQuality)
+      };
+
+      for (const listener of qualityListeners) {
+        try { listener(currentQuality, config); } catch { /* */ }
+      }
+
+      for (const listener of toastListeners) {
+        try { listener(event); } catch { /* */ }
+      }
+    }
+
     // No change — cancel any pending upgrade
     if (pendingUpgrade && pendingUpgrade !== newQuality) {
       pendingUpgrade = null;
@@ -383,9 +490,11 @@ export function initNetworkMonitor(): void {
 
   loadManualOverride();
   currentQuality = resolveQuality();
+  detectionSource = resolveDetectionSource();
 
   // Start PerformanceObserver for real throughput measurement
   startPerformanceObserver();
+  void runStartupProbe();
 
   // Listen for connection changes (Chrome/Edge/Android)
   const conn = (navigator as any).connection;
@@ -409,6 +518,10 @@ export function recordThroughput(bytes: number, durationMs: number): void {
 /** Get the current connection quality. */
 export function getConnectionQuality(): ConnectionQuality {
   return currentQuality;
+}
+
+export function getDetectionSource(): DetectionSource {
+  return detectionSource;
 }
 
 /** Get the current network config based on quality. */
@@ -435,6 +548,7 @@ export function setLowDataMode(mode: ConnectionQuality | null): void {
   const newQuality = resolveQuality();
   if (newQuality !== previous) {
     currentQuality = newQuality;
+    detectionSource = resolveDetectionSource();
     const config = buildQualityConfigs()[currentQuality];
     const reason = mode ? 'Low Data Mode enabled' : 'Low Data Mode disabled';
 
@@ -447,7 +561,20 @@ export function setLowDataMode(mode: ConnectionQuality | null): void {
     }
   } else {
     currentQuality = newQuality;
+    detectionSource = resolveDetectionSource();
   }
+}
+
+export async function retestNetworkQuality(): Promise<void> {
+  startupProbeRan = false;
+  startupProbeQuality = null;
+  startupProbeMedianBytesPerSec = 0;
+  throughputSamples.length = 0;
+  recentFailures = 0;
+  detectionSource = resolveDetectionSource();
+  currentQuality = resolveQuality();
+  await runStartupProbe();
+  updateQuality();
 }
 
 /** Subscribe to quality changes. Returns unsubscribe function. */
