@@ -406,7 +406,10 @@
   }
 
   function adjustableStrokeTool(tool: EditorTool): AdjustableStrokeTool | null {
-    return tool === 'pen' || tool === 'pencil' || tool === 'highlighter' || tool === 'eraser' ? tool : null;
+    if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter' || tool === 'eraser') {
+      return tool as AdjustableStrokeTool;
+    }
+    return null;
   }
 
   function strokeToolLabel(tool: EditorTool): string {
