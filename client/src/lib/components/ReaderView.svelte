@@ -36,7 +36,7 @@
   import { deleteDraft, readDraft, writeDraft } from '../drafts';
   import { createClientId } from '../id';
   import { prefetchPdfPage } from '../pdf';
-  import { getNetworkConfig, getConnectionQuality, onQualityChange } from '../networkMonitor';
+  import { getNetworkConfig, getConnectionQuality, onQualityChange, type ConnectionQuality, type NetworkConfig } from '../networkMonitor';
   import { waitForIdle } from '../renderScheduler';
   import {
     startBackgroundDownload,
@@ -284,6 +284,8 @@
   let thumbnailSidebarPages: DocumentBundle['pages'] = [];
   let previewAnnotationsByPage: Record<string, PageAnnotation[] | null> = {};
   let thumbnailRenderVersionByPage: Record<string, number> = {};
+  let connectionQuality: ConnectionQuality = getConnectionQuality();
+  let networkConfig: NetworkConfig = getNetworkConfig();
 
   // ── Reactive Derived Values ───────────────────────────────────────────
 
@@ -1093,7 +1095,7 @@
   // ── Thumbnail Helpers ─────────────────────────────────────────────────
 
   function thumbnailPreviewWidth(): number {
-    const maxWidth = getNetworkConfig().maxThumbnailWidth;
+    const maxWidth = networkConfig.maxThumbnailWidth;
     return compactMode ? Math.min(120, maxWidth) : Math.min(240, maxWidth);
   }
 
@@ -1667,7 +1669,7 @@
       }
 
       // Start background pre-downloading per-page PDFs on slow/medium connections
-      if (getConnectionQuality() !== 'fast') {
+      if (connectionQuality !== 'fast') {
         void startBackgroundDownload(nextBundle.pages, Math.max(activePageIndex, 0));
       }
     } catch (error) {
@@ -1714,7 +1716,7 @@
     const targetIndex = targetPageId ? nextBundle.pages.findIndex((page) => page.id === targetPageId) : 0;
     scrollToPage(Math.max(targetIndex, 0), 'auto');
 
-    if (getConnectionQuality() !== 'fast') {
+    if (connectionQuality !== 'fast') {
       void startBackgroundDownload(nextBundle.pages, Math.max(targetIndex, 0));
     }
   }
@@ -2124,7 +2126,9 @@
     }
 
     // Start/stop background downloader when connection quality changes
-    const unsubQuality = onQualityChange((quality) => {
+    const unsubQuality = onQualityChange((quality, config) => {
+      connectionQuality = quality;
+      networkConfig = config;
       if (quality !== 'fast' && bundle && !isBackgroundDownloadActive()) {
         void startBackgroundDownload(bundle.pages, Math.max(activePageIndex, 0));
       } else if (quality === 'fast') {
@@ -2190,7 +2194,7 @@
     // On slow/medium connections, skip eager annotation loading for thumbnails.
     // Thumbnails use the server-rendered SVG preview which doesn't need annotation data.
     // This prevents 37MB+ annotation payloads from choking the connection.
-    if (getConnectionQuality() === 'fast') {
+    if (connectionQuality === 'fast') {
       thumbnailSidebarPages.forEach((page) => {
         void loadPageState(page.id);
       });
@@ -2209,7 +2213,7 @@
 
   /** Pre-cache per-page PDFs around the active page for fast navigation */
   async function prefetchAdjacentPages(centerIndex: number): Promise<void> {
-    const quality = getConnectionQuality();
+    const quality = connectionQuality;
     // On slow/medium connections, wait for visible pages to finish rendering
     // before firing prefetch requests. This prevents prefetch from stealing
     // the browser's limited connection slots (~6 per origin) from the
@@ -2219,7 +2223,7 @@
     }
 
     const pages = bundle?.pages ?? [];
-    const radius = getNetworkConfig().prefetchRadius;
+    const radius = networkConfig.prefetchRadius;
     const offsets: number[] = [];
     for (let d = 1; d <= radius; d += 1) {
       offsets.push(centerIndex - d, centerIndex + d);
@@ -2872,6 +2876,8 @@
                 activePageIndex={activePageIndex}
                 isActive={pageLayout.pageIndex === activePageIndex}
                 layout={pageLayout}
+                connectionQuality={connectionQuality}
+                networkConfig={networkConfig}
                 penStrokeWidths={strokePresetSettings.pen}
                 pencilStrokeWidths={strokePresetSettings.pencil}
                 sizePreset={selectedSize}

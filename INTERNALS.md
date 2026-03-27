@@ -192,7 +192,7 @@ The DPR (device pixel ratio) used for rendering adapts to conditions:
 
 - **Fast connection, desktop (>1080px):** full native DPR for crisp rendering
 - **Fast connection, touch:** capped at 2× DPR
-- **Slow connection:** always 1× DPR regardless of device (halves pixel count, reduces data needed)
+- **Slow connection:** no forced DPR downgrade for the final PDF canvas; bandwidth savings come from per-page PDF extracts, reduced preview fetches, and disabled prefetching
 
 ---
 

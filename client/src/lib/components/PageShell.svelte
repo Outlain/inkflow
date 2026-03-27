@@ -22,8 +22,8 @@
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
   import { cancelCanvasRender, renderPdfPage, measurePreviewLoad, type PdfRenderSegment } from '../pdf';
-  import { getNetworkConfig, getConnectionQuality } from '../networkMonitor';
-  import { scheduleRender, cancelRender } from '../renderScheduler';
+  import { scheduleRender } from '../renderScheduler';
+  import type { ConnectionQuality, NetworkConfig } from '../networkMonitor';
   import type { PageShellLayout } from '../reader/layout';
   import {
     createStroke,
@@ -57,6 +57,14 @@
   export let activePageIndex = 0;
   export let viewportTop = 0;
   export let viewportHeight = 0;
+  export let connectionQuality: ConnectionQuality = 'fast';
+  export let networkConfig: NetworkConfig = {
+    rangeChunkSize: 1024 * 1024,
+    maxPreviewWidth: 960,
+    maxThumbnailWidth: 240,
+    prefetchRadius: 4,
+    previewRadius: Infinity
+  };
   export let penStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pen] as StrokePresetValues;
   export let pencilStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.pencil] as StrokePresetValues;
   export let highlighterStrokeWidths: StrokePresetValues = [...DEFAULT_STROKE_PRESET_SETTINGS.highlighter] as StrokePresetValues;
@@ -87,9 +95,10 @@
 
   // ── Internal state ──
 
-  let topCanvas: HTMLCanvasElement | null = null;
-  let middleCanvas: HTMLCanvasElement | null = null;
-  let bottomCanvas: HTMLCanvasElement | null = null;
+  let fullCanvas: HTMLCanvasElement | null = null;
+  let topSegmentCanvas: HTMLCanvasElement | null = null;
+  let middleSegmentCanvas: HTMLCanvasElement | null = null;
+  let bottomSegmentCanvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
   let renderToken = 0;
   let renderedScaleKey = '';
@@ -111,6 +120,10 @@
   let previewDeferred = false;
   let previewDeferTimer: ReturnType<typeof setTimeout> | null = null;
   let renderIntentKey = '';
+  let layoutGeometryKey = '';
+  let previousLayoutGeometryKey = '';
+  let renderStrategyKey = '';
+  let previousRenderStrategyKey = '';
   let eraserIndicatorPoint: PagePoint | null = null;
   let eraserIndicatorVisible = false;
   let eraserIndicatorStyle = '';
@@ -469,7 +482,7 @@
   }
 
   function useSegmentedPdfRender(): boolean {
-    return getConnectionQuality() !== 'slow';
+    return connectionQuality !== 'slow';
   }
 
   function segmentKey(scaleKey: string, segment: PdfRenderSegment): string {
@@ -482,42 +495,48 @@
 
   function canvasForSegment(segment: PdfRenderSegment): HTMLCanvasElement | null {
     if (segment === 'full') {
-      return topCanvas;
+      return fullCanvas;
     }
 
     if (segment === 'top') {
-      return topCanvas;
+      return topSegmentCanvas;
     }
 
     if (segment === 'middle') {
-      return middleCanvas;
+      return middleSegmentCanvas;
     }
 
-    return bottomCanvas;
+    return bottomSegmentCanvas;
   }
 
   function cancelSegmentRenders(): void {
-    if (topCanvas) {
-      cancelCanvasRender(topCanvas);
+    if (fullCanvas) {
+      cancelCanvasRender(fullCanvas);
     }
 
-    if (middleCanvas) {
-      cancelCanvasRender(middleCanvas);
+    if (topSegmentCanvas) {
+      cancelCanvasRender(topSegmentCanvas);
     }
 
-    if (bottomCanvas) {
-      cancelCanvasRender(bottomCanvas);
+    if (middleSegmentCanvas) {
+      cancelCanvasRender(middleSegmentCanvas);
+    }
+
+    if (bottomSegmentCanvas) {
+      cancelCanvasRender(bottomSegmentCanvas);
     }
   }
 
   function segmentCanvasStyle(segment: Exclude<PdfRenderSegment, 'full'>): string {
-    const totalHeight = Math.max(1, Math.floor(layout.height));
-    const third = Math.max(1, Math.floor(totalHeight / 3));
+    if (segment === 'top') {
+      return 'top:0; height:calc(100% / 3);';
+    }
 
-    const top = segment === 'top' ? 0 : segment === 'middle' ? third : third * 2;
-    const height = segment === 'bottom' ? Math.max(1, totalHeight - third * 2) : third;
+    if (segment === 'middle') {
+      return 'top:calc(100% / 3); height:calc(100% / 3);';
+    }
 
-    return `top:${top}px; height:${height}px;`;
+    return 'top:calc((100% / 3) * 2); height:calc(100% - ((100% / 3) * 2));';
   }
 
   function fullCanvasStyle(): string {
@@ -577,15 +596,19 @@
   }
 
   async function renderPdfIfNeeded(): Promise<void> {
-    if (!topCanvas || !file || layout.page.kind !== 'pdf') {
+    if (!file || layout.page.kind !== 'pdf') {
       return;
     }
 
-    if (useSegmentedPdfRender() && (!middleCanvas || !bottomCanvas)) {
+    if (useSegmentedPdfRender()) {
+      if (!topSegmentCanvas || !middleSegmentCanvas || !bottomSegmentCanvas) {
+        return;
+      }
+    } else if (!fullCanvas) {
       return;
     }
 
-    const nextScaleKey = Number(layout.scale.toFixed(4)).toFixed(4);
+    const nextScaleKey = `${Number(layout.scale.toFixed(4)).toFixed(4)}:${connectionQuality}`;
     if (renderedScaleKey !== nextScaleKey) {
       renderedScaleKey = nextScaleKey;
       renderedSegments = new Set<string>();
@@ -1692,7 +1715,7 @@
   $: if (layout.page.kind === 'pdf') {
     if (!allowRender && !renderSuspended) {
       renderSuspended = true;
-      if (topCanvas || middleCanvas || bottomCanvas) {
+      if (fullCanvas || topSegmentCanvas || middleSegmentCanvas || bottomSegmentCanvas) {
         renderToken += 1;
         cancelSegmentRenders();
       }
@@ -1701,15 +1724,45 @@
     }
   }
 
+  $: layoutGeometryKey =
+    layout.page.kind === 'pdf'
+      ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${Math.round(layout.width)}:${Math.round(layout.height)}`
+      : '';
+
+  $: if (layout.page.kind === 'pdf' && layoutGeometryKey && layoutGeometryKey !== previousLayoutGeometryKey) {
+    previousLayoutGeometryKey = layoutGeometryKey;
+    renderToken += 1;
+    cancelSegmentRenders();
+    renderedScaleKey = '';
+    renderedSegments = new Set<string>();
+    isReady = false;
+    fullQualityReady = false;
+  }
+
+  $: renderStrategyKey =
+    layout.page.kind === 'pdf'
+      ? `${connectionQuality}:${useSegmentedPdfRender() ? 'segmented' : 'full'}`
+      : '';
+
+  $: if (layout.page.kind === 'pdf' && renderStrategyKey && renderStrategyKey !== previousRenderStrategyKey) {
+    previousRenderStrategyKey = renderStrategyKey;
+    renderToken += 1;
+    cancelSegmentRenders();
+    renderedScaleKey = '';
+    renderedSegments = new Set<string>();
+    isReady = false;
+    fullQualityReady = false;
+  }
+
   $: renderIntentKey =
     layout.page.kind === 'pdf'
-      ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${viewportTop}:${viewportHeight}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
+      ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${renderStrategyKey}:${viewportTop}:${viewportHeight}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
       : '';
 
   // All connection speeds get full-res PDF.js rendering. On slow/medium,
   // the per-page PDF endpoint provides a self-contained ~100-500KB file
   // that downloads in one request. No dwell delay needed.
-  $: if (topCanvas && (!useSegmentedPdfRender() || (middleCanvas && bottomCanvas)) && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
+  $: if (((useSegmentedPdfRender() && topSegmentCanvas && middleSegmentCanvas && bottomSegmentCanvas) || (!useSegmentedPdfRender() && fullCanvas)) && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
     scheduleRender(
       layout.page.id,
       layout.pageIndex,
@@ -1740,23 +1793,22 @@
     clearEraserIndicator();
   }
 
-  $: previewWidth = Math.max(120, Math.min(Math.ceil(layout.width), getNetworkConfig().maxPreviewWidth));
+  $: previewWidth = Math.max(120, Math.min(Math.ceil(layout.width), networkConfig.maxPreviewWidth));
 
   // On slow connections, skip preview images for pages far from the active page.
   // This prevents preview HTTP requests from consuming connection slots that the
   // active page's PDF.js range requests need.
   // slow = no previews (skeleton → canvas only), medium = active ± 2, fast = all
   $: showPreview = (() => {
-    const config = getNetworkConfig();
-    if (config.previewRadius === Infinity) return true;
-    return Math.abs(layout.pageIndex - activePageIndex) <= config.previewRadius;
+    if (networkConfig.previewRadius === Infinity) return true;
+    return Math.abs(layout.pageIndex - activePageIndex) <= networkConfig.previewRadius;
   })();
 
   // On slow/medium connections, defer preview src for non-active pages.
   // This gives the active page's preview and PDF first access to connection slots.
   // Active page gets src immediately; neighbors get it after 200ms.
   $: {
-    const slow = getConnectionQuality() !== 'fast';
+    const slow = connectionQuality !== 'fast';
     if (!slow || isActive) {
       // Fast connection or active page: load immediately
       previewDeferred = false;
@@ -1791,7 +1843,7 @@
       {#if (!previewLoaded || !showPreview) && !isReady}
         <div class="reader-page-skeleton"></div>
       {/if}
-      {#if showPreview && !previewDeferred && (allowRender || previewLoaded || getConnectionQuality() === 'fast')}
+      {#if showPreview && !previewDeferred && (allowRender || previewLoaded || connectionQuality === 'fast')}
         <img
           alt=""
           aria-hidden="true"
@@ -1799,33 +1851,33 @@
           class="reader-pdf-preview"
           decoding="async"
           fetchpriority={isActive ? 'high' : 'low'}
-          loading={getConnectionQuality() === 'fast' ? 'eager' : 'lazy'}
+          loading={connectionQuality === 'fast' ? 'eager' : 'lazy'}
           on:load={previewDidLoad}
           src={`/api/pages/${layout.page.id}/preview?width=${previewWidth}`}
         />
       {/if}
       {#if useSegmentedPdfRender()}
         <canvas
-          bind:this={topCanvas}
+          bind:this={topSegmentCanvas}
           class:ready={segmentReady('top')}
           class="reader-pdf-canvas reader-pdf-canvas-top"
           style={segmentCanvasStyle('top')}
         ></canvas>
         <canvas
-          bind:this={middleCanvas}
+          bind:this={middleSegmentCanvas}
           class:ready={segmentReady('middle')}
           class="reader-pdf-canvas reader-pdf-canvas-middle"
           style={segmentCanvasStyle('middle')}
         ></canvas>
         <canvas
-          bind:this={bottomCanvas}
+          bind:this={bottomSegmentCanvas}
           class:ready={segmentReady('bottom')}
           class="reader-pdf-canvas reader-pdf-canvas-bottom"
           style={segmentCanvasStyle('bottom')}
         ></canvas>
       {:else}
         <canvas
-          bind:this={topCanvas}
+          bind:this={fullCanvas}
           class:ready={segmentReady('full')}
           class="reader-pdf-canvas reader-pdf-canvas-full"
           style={fullCanvasStyle()}

@@ -23,10 +23,11 @@ const canvasTasks = new WeakMap<HTMLCanvasElement, RenderTask>();
 /** LRU cache of rendered surfaces keyed by file+page+resolution+segment. */
 const renderSurfaceCache = new Map<string, { surface: ImageBitmap | HTMLCanvasElement; pixels: number }>();
 
-// ~100M pixels ≈ 400 MB — keeps ~34 full A4 pages at 2x DPR rendered in cache
-const DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
-// ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile
-const TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
+// Default cache budgets used when no runtime env override is provided.
+// ~100M pixels ≈ 400 MB — keeps ~34 full A4 pages at 2x DPR rendered in cache.
+const DEFAULT_DESKTOP_RENDER_CACHE_PIXEL_BUDGET = 100_000_000;
+// ~50M pixels ≈ 200 MB — keeps ~17 full A4 pages on tablets/mobile.
+const DEFAULT_TOUCH_RENDER_CACHE_PIXEL_BUDGET = 50_000_000;
 
 function integerOrFallback(value: unknown, fallback: number): number {
   const parsed = Number(value);
@@ -126,16 +127,8 @@ export function resolvePdfDeviceScale(options: {
   coarsePointer: boolean;
   viewportWidth: number;
 }): number {
-  const { devicePixelRatio, pageScale, coarsePointer, viewportWidth } = options;
+  const { devicePixelRatio, coarsePointer, viewportWidth } = options;
   const safeRatio = Math.max(devicePixelRatio || 1, 1);
-  const quality = getConnectionQuality();
-
-  // On slow connections, render at 1× DPR regardless of device.
-  // This halves the pixel dimensions, reducing the amount of font/image data
-  // PDF.js needs to fetch and the canvas memory required.
-  if (quality === 'slow') {
-    return 1;
-  }
 
   if (!coarsePointer && viewportWidth > 1080) {
     // Allow full native DPR on desktop for crisp rendering
@@ -197,8 +190,8 @@ function touchCacheEntry(cacheKey: string): ImageBitmap | HTMLCanvasElement | nu
 function cachePixelBudget(coarsePointer: boolean): number {
   const runtime = getPublicRuntimeConfig();
   return coarsePointer
-    ? integerOrFallback(runtime.renderCacheTouchPixels, TOUCH_RENDER_CACHE_PIXEL_BUDGET)
-    : integerOrFallback(runtime.renderCacheDesktopPixels, DESKTOP_RENDER_CACHE_PIXEL_BUDGET);
+    ? integerOrFallback(runtime.renderCacheTouchPixels, DEFAULT_TOUCH_RENDER_CACHE_PIXEL_BUDGET)
+    : integerOrFallback(runtime.renderCacheDesktopPixels, DEFAULT_DESKTOP_RENDER_CACHE_PIXEL_BUDGET);
 }
 
 /** Insert a rendered surface into the LRU cache, evicting oldest entries if over budget. */
@@ -235,14 +228,10 @@ function offscreenCanvasSupported(): boolean {
 function copySurfaceToCanvas(params: {
   canvas: HTMLCanvasElement;
   surface: HTMLCanvasElement;
-  cssWidth: number;
-  cssHeight: number;
 }): void {
-  const { canvas, surface, cssWidth, cssHeight } = params;
+  const { canvas, surface } = params;
   canvas.width = surface.width;
   canvas.height = surface.height;
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) {
     return;
@@ -255,17 +244,17 @@ function ensureCanvasSize(params: {
   canvas: HTMLCanvasElement;
   targetWidth: number;
   targetHeight: number;
-  cssWidth: number;
-  cssHeight: number;
 }): CanvasRenderingContext2D | null {
-  const { canvas, targetWidth, targetHeight, cssWidth, cssHeight } = params;
+  const { canvas, targetWidth, targetHeight } = params;
   if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
     canvas.width = targetWidth;
     canvas.height = targetHeight;
   }
 
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
+  // PageShell owns the CSS slot geometry for both full-page and segmented
+  // canvases. Reapplying inline CSS sizes here can leave stale heights in
+  // place during the initial relayout window, which visually separates the
+  // page thirds until a rerender catches up.
   return canvas.getContext('2d', { alpha: false });
 }
 
@@ -310,12 +299,9 @@ export async function renderPdfPage(params: {
     coarsePointer,
     viewportWidth
   });
-  const cssWidth = Math.max(1, Math.floor(page.width * scale));
-  const cssHeight = Math.max(1, Math.floor(page.height * scale));
   const targetWidth = Math.max(1, Math.floor(page.width * scale * deviceScale));
   const targetHeight = Math.max(1, Math.floor(page.height * scale * deviceScale));
   const { height: segmentHeight, top: segmentTop } = segmentBounds(targetHeight, segment);
-  const segmentCssHeight = Math.max(1, Math.floor((segmentHeight / targetHeight) * cssHeight));
   const cacheKey = renderSegmentKey(file, page, targetWidth, targetHeight, segment, segmentTop, segmentHeight);
   const cachedSurface = touchCacheEntry(cacheKey);
   if (cachedSurface) {
@@ -323,9 +309,7 @@ export async function renderPdfPage(params: {
     const context = ensureCanvasSize({
       canvas,
       targetWidth,
-      targetHeight: segmentCanvas ? segmentHeight : targetHeight,
-      cssWidth,
-      cssHeight: segmentCanvas ? segmentCssHeight : cssHeight
+      targetHeight: segmentCanvas ? segmentHeight : targetHeight
     });
     if (!context) {
       return;
@@ -360,9 +344,7 @@ export async function renderPdfPage(params: {
   const targetContext = ensureCanvasSize({
     canvas,
     targetWidth,
-    targetHeight: segmentCanvas ? segmentHeight : targetHeight,
-    cssWidth,
-    cssHeight: segmentCanvas ? segmentCssHeight : cssHeight
+    targetHeight: segmentCanvas ? segmentHeight : targetHeight
   });
   if (!targetContext) {
     return;
