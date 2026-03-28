@@ -18,6 +18,7 @@ For high-level system design, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 - [Service Worker Caching](#service-worker-caching)
 - [Connection Slot Management](#connection-slot-management)
 - [Render Scheduler](#render-scheduler)
+- [Dark / Light Theme](#dark--light-theme)
 
 ---
 
@@ -418,3 +419,28 @@ On slow/medium connections, `prefetchAdjacentPages()` awaits `waitForIdle()` bef
 **File:** `server/src/index.ts`
 
 The server uses `@fastify/compress` with a 1KB threshold. This compresses JSON API responses (including annotation data which can be 37MB+ uncompressed for large documents) to ~2-3MB with gzip/brotli. On slow/medium connections, thumbnail sidebar annotation loading is skipped entirely to avoid these large payloads.
+
+---
+
+## Dark / Light Theme
+
+**File:** `client/src/lib/theme.ts`, `client/src/styles.css`
+
+### How It Works
+
+The theme system is CSS-only — no JavaScript re-rendering is needed. All theme-sensitive colors are defined as `--ink-*` CSS custom properties in `:root`, and `[data-theme="dark"]` overrides those variables. Switching themes changes a single `data-theme` attribute on `<html>`, and the browser recalculates all `var()` references automatically.
+
+### Flash Prevention
+
+An inline `<script>` in `index.html` runs synchronously before any CSS or JS loads. It reads `localStorage('inkflow-theme')` or checks `prefers-color-scheme`, and sets `data-theme="dark"` on `<html>` immediately if needed. This prevents the page from rendering with light variables and then flashing to dark after the Svelte app mounts.
+
+### What the Theme Does NOT Affect
+
+- **PDF page paper** — stays `#fffdfa` in both themes. PDF content is a rendered bitmap and needs a light background for readability. Notebook templates (ruled, grid, dot) also stay light.
+- **Drawing toolbar and stroke popover** — these are dark overlays (`--ink-dark-toolbar`) by design. They use white-on-dark text internally and work in both themes. In dark mode the toolbar background is slightly adjusted for contrast against the dark surrounding UI.
+- **Decorative colors** — pen/highlighter colors, sticky note colors, tape strip colors, folder/notebook cover colors are not themed. They are display colors chosen by the user or the system and are independent of light/dark mode.
+- **Network toasts** — use semantic background colors (orange for slow, yellow for medium, green for fast) that work independently of the theme.
+
+### System Preference and Persistence
+
+On first visit with no stored preference, the app reads `prefers-color-scheme` from the browser. A `matchMedia` change listener updates the theme live if the OS setting changes and the user hasn't made an explicit choice. Once the user clicks the toggle, their choice is persisted to `localStorage` and the system preference listener is ignored.

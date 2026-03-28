@@ -248,7 +248,7 @@
 
   .top-notebook-title {
     font-size: 0.88rem;
-    color: #1e2832;
+    color: var(--ink-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

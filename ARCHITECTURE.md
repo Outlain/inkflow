@@ -154,6 +154,7 @@ Tests live alongside source as `*.test.ts` rather than in one top-level `tests/`
   - `renderScheduler.ts` — active-page-first render ordering
   - `annotations.ts` — stroke/shape/lasso/eraser logic
   - `drafts.ts` / `activity.ts` — local-first persistence and study activity
+  - `theme.ts` — dark/light mode toggle, localStorage persistence, system preference
   - `reader/layout.ts` — fixed page shell layout calculations
 
 ### Backend
@@ -279,6 +280,25 @@ Important design choices:
 - Dirty local pages reject stale remote payload application.
 - Every draft/save record carries timestamps and monotonic client revision metadata.
 - Recovery chooses the newest safe state and never blindly overwrites newer local work with older remote snapshots.
+
+## Styling and Theming
+
+### CSS Custom Properties
+
+All theme-sensitive colors are defined as `--ink-*` CSS custom properties in `:root` (light defaults) and overridden in `[data-theme="dark"]`. This includes text colors, surface/panel backgrounds, borders, shadows, body gradients, page backgrounds, and skeleton animations. About 35 variables in total.
+
+Non-theme colors (drawing tool colors, sticky note colors, folder/notebook cover colors, dark toolbar internals) use hardcoded values since they are decorative or intentionally dark in both modes.
+
+### Theme State
+
+`client/src/lib/theme.ts` manages the active theme:
+- Reads from `localStorage` (`inkflow-theme`) on init, falls back to `prefers-color-scheme`.
+- `toggleTheme()` switches between light/dark and persists the choice.
+- An inline script in `index.html` applies the stored theme before CSS loads to prevent flash.
+
+### What Stays Light
+
+PDF page paper and notebook template backgrounds remain light (`#fffdfa`) in dark mode. PDF content is a rendered bitmap that assumes a white page. The drawing toolbar, stroke popover, and timekeeper overlay are dark overlays in both themes.
 
 ## Data Model
 

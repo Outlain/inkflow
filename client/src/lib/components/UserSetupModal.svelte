@@ -68,7 +68,7 @@
   .setup-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(30, 28, 24, 0.6);
+    background: var(--ink-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -77,13 +77,13 @@
   }
 
   .setup-modal {
-    background: #f7f2e8;
+    background: var(--ink-bg-popup);
     border-radius: 28px;
     padding: 36px 32px;
     max-width: 380px;
     width: 100%;
     text-align: center;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+    box-shadow: var(--ink-shadow-modal);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -128,7 +128,7 @@
     border-radius: 12px;
     background: var(--ink-paper);
     font-size: 1rem;
-    color: #1e2832;
+    color: var(--ink-text);
     outline: none;
     text-align: center;
   }

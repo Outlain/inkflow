@@ -95,7 +95,7 @@
   .settings-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--ink-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -104,14 +104,14 @@
   }
 
   .settings-popup {
-    background: #f7f2e8;
+    background: var(--ink-bg-popup);
     border-radius: 24px;
     padding: 24px;
     max-width: 420px;
     width: 100%;
     max-height: 80vh;
     overflow-y: auto;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--ink-shadow-modal);
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -158,7 +158,7 @@
   .settings-field label {
     font-size: 0.88rem;
     font-weight: 600;
-    color: #1e2832;
+    color: var(--ink-text);
   }
 
   .settings-hint {

@@ -8,6 +8,7 @@
   import { navigate, readCurrentRoute, type AppRoute } from './lib/router';
   import { getAppSession, getStudySession, initTabCoordination } from './lib/activity';
   import { initNetworkMonitor } from './lib/networkMonitor';
+  import { initTheme } from './lib/theme';
   import NetworkToast from './lib/components/NetworkToast.svelte';
   import { loadReaderBrowserSafeTopbar, saveReaderBrowserSafeTopbar } from './lib/readerChromeMode';
 
@@ -46,6 +47,9 @@
     readerBrowserSafeTopbar = loadReaderBrowserSafeTopbar();
     syncRoute();
     window.addEventListener('popstate', syncRoute);
+
+    // Initialize theme (light/dark mode)
+    initTheme();
 
     // Initialize network quality monitor
     initNetworkMonitor();

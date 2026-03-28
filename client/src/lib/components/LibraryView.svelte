@@ -10,6 +10,9 @@
   import NotebookStatsPopup from './NotebookStatsPopup.svelte';
   import UserSetupModal from './UserSetupModal.svelte';
   import { isLowDataMode, setLowDataMode, getConnectionQuality, getDetectionSource, retestNetworkQuality, onQualityChange } from '../networkMonitor';
+  import { toggleTheme, getTheme, type Theme } from '../theme';
+
+  let currentTheme: Theme = 'light';
 
   const dispatch = createEventDispatcher<{ openDocument: { documentId: string }; toggleBrowserSafeTopbar: { enabled: boolean } }>();
 
@@ -96,6 +99,7 @@
   }
 
   onMount(() => {
+    currentTheme = getTheme();
     void loadLibrary();
 
     const unsubscribe = onQualityChange((quality) => {
@@ -323,6 +327,9 @@
         <button class="button" type="button" on:click={openNotebookModal}>New Notebook</button>
         <button class="button primary" type="button" on:click={() => chooseImportFolder(null)}>
           {uploading ? 'Importing…' : 'Import PDF'}
+        </button>
+        <button class="icon-button" type="button" title="{currentTheme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}" on:click={() => { currentTheme = toggleTheme(); }}>
+          {currentTheme === 'light' ? '\u263E' : '\u2600'}
         </button>
       </div>
     </section>

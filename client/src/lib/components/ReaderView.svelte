@@ -37,6 +37,7 @@
   import { createClientId } from '../id';
   import { prefetchPdfPage } from '../pdf';
   import { getNetworkConfig, getConnectionQuality, onQualityChange, type ConnectionQuality, type NetworkConfig } from '../networkMonitor';
+  import { toggleTheme, getTheme, type Theme } from '../theme';
   import { waitForIdle } from '../renderScheduler';
   import {
     startBackgroundDownload,
@@ -207,6 +208,7 @@
   let zoom = 1;
   let zoomLabel = '100%';
   let compactMode = typeof window !== 'undefined' ? window.innerWidth <= 1080 : false;
+  let currentTheme: Theme = getTheme();
   let layout: ReaderLayoutResult = { containerHeight: 0, containerWidth: 0, pages: [] };
   let visibleWindow: VisibleWindow = { start: 0, end: -1 };
   let visibleLayouts: PageShellLayout[] = [];
@@ -2968,6 +2970,13 @@
             activePageIndex={activePageIndex}
             on:changed={(e) => chapters = e.detail.chapters}
           />
+        </section>
+
+        <section class="inspector-card">
+          <h3>Appearance</h3>
+          <button class="button subtle full" type="button" on:click={() => { currentTheme = toggleTheme(); }}>
+            {currentTheme === 'light' ? '\u263E Dark Mode' : '\u2600 Light Mode'}
+          </button>
         </section>
 
         <section class="inspector-card">

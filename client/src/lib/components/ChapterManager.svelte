@@ -413,9 +413,9 @@
     font-size: 0.82rem;
     color: var(--ink-soft);
     padding: 6px 10px;
-    background: rgba(45, 110, 150, 0.08);
+    background: var(--ink-blue-subtle);
     border-radius: 8px;
-    border: 1px solid rgba(45, 110, 150, 0.15);
+    border: 1px solid var(--ink-blue-border);
   }
 
   .chapter-current strong {
@@ -440,8 +440,8 @@
   }
 
   .chapter-item.active {
-    border-color: rgba(45, 110, 150, 0.3);
-    background: rgba(45, 110, 150, 0.06);
+    border-color: var(--ink-blue-border);
+    background: var(--ink-blue-subtle);
   }
 
   .chapter-item-info {
@@ -454,7 +454,7 @@
 
   .chapter-item-title {
     font-size: 0.85rem;
-    color: #1e2832;
+    color: var(--ink-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -512,9 +512,9 @@
     padding: 8px 10px;
     border: 1px solid var(--ink-border);
     border-radius: 8px;
-    background: white;
+    background: var(--ink-surface-solid);
     font-size: 0.88rem;
-    color: #1e2832;
+    color: var(--ink-text);
     outline: none;
     box-sizing: border-box;
   }
@@ -546,9 +546,9 @@
     padding: 6px 8px;
     border: 1px solid var(--ink-border);
     border-radius: 6px;
-    background: white;
+    background: var(--ink-surface-solid);
     font-size: 0.85rem;
-    color: #1e2832;
+    color: var(--ink-text);
     outline: none;
     box-sizing: border-box;
   }
@@ -606,7 +606,7 @@
     background: rgba(0, 0, 0, 0.04);
     padding: 2px 6px;
     border-radius: 4px;
-    color: #1e2832;
+    color: var(--ink-text);
     font-family: monospace;
   }
 
@@ -615,10 +615,10 @@
     padding: 8px 10px;
     border: 1px solid var(--ink-border);
     border-radius: 8px;
-    background: white;
+    background: var(--ink-surface-solid);
     font-size: 0.82rem;
     font-family: monospace;
-    color: #1e2832;
+    color: var(--ink-text);
     outline: none;
     resize: vertical;
     min-height: 100px;
@@ -656,7 +656,7 @@
   }
 
   .chapter-bulk-preview-title {
-    color: #1e2832;
+    color: var(--ink-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
