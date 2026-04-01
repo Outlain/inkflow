@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildPdfRenderStateKey,
+  getOrderedPdfRenderSlices,
+  getPdfRenderSlices,
   getPdfRenderStrategy,
-  getPdfSegmentCssBounds,
-  getPdfSegmentCssLayout,
-  getVisiblePdfSegments,
+  getVisiblePdfRenderSlices,
   resolvePdfDeviceScale
 } from './pdf';
 import { setLowDataMode } from './networkMonitor';
@@ -67,8 +67,8 @@ describe('resolvePdfDeviceScale', () => {
     ).toBe(2);
   });
 
-  it('keeps segment CSS bounds contiguous on compact readers', () => {
-    const layout = getPdfSegmentCssLayout({
+  it('keeps slice CSS bounds contiguous on compact readers', () => {
+    const slices = getPdfRenderSlices({
       pageHeight: 917,
       pageScale: 1,
       devicePixelRatio: 2,
@@ -76,16 +76,18 @@ describe('resolvePdfDeviceScale', () => {
       viewportWidth: 820
     });
 
-    expect(layout.top.top).toBe(0);
-    expect(layout.top.bottom).toBe(layout.middle.top);
-    expect(layout.middle.bottom).toBe(layout.bottom.top);
-    expect(layout.bottom.bottom).toBe(917);
+    expect(slices.length).toBeGreaterThan(3);
+    expect(slices[0]?.top).toBe(0);
+    for (let index = 1; index < slices.length; index += 1) {
+      expect(slices[index - 1]?.bottom).toBe(slices[index]?.top);
+    }
+    expect(slices.at(-1)?.bottom).toBe(917);
   });
 
-  it('keeps fractional-scale segment CSS bounds contiguous and shell-covering', () => {
+  it('keeps fractional-scale slice CSS bounds contiguous and shell-covering', () => {
     const pageHeight = 917;
     const pageScale = 0.9975;
-    const layout = getPdfSegmentCssLayout({
+    const slices = getPdfRenderSlices({
       pageHeight,
       pageScale,
       devicePixelRatio: 2,
@@ -93,38 +95,18 @@ describe('resolvePdfDeviceScale', () => {
       viewportWidth: 820
     });
 
-    expect(layout.top.top).toBe(0);
-    expect(layout.top.bottom).toBe(layout.middle.top);
-    expect(layout.middle.bottom).toBe(layout.bottom.top);
-    expect(layout.bottom.bottom).toBeCloseTo(pageHeight * pageScale, 5);
+    expect(slices[0]?.top).toBe(0);
+    for (let index = 1; index < slices.length; index += 1) {
+      expect(slices[index - 1]?.bottom).toBe(slices[index]?.top);
+    }
+    expect(slices.at(-1)?.bottom).toBeCloseTo(pageHeight * pageScale, 5);
   });
 
-  it('returns single-segment bounds from the shared segment layout', () => {
-    const layout = getPdfSegmentCssLayout({
-      pageHeight: 917,
-      pageScale: 1,
-      devicePixelRatio: 2,
-      coarsePointer: true,
-      viewportWidth: 820
-    });
-    const middle = getPdfSegmentCssBounds({
-      pageHeight: 917,
-      pageScale: 1,
-      devicePixelRatio: 2,
-      coarsePointer: true,
-      viewportWidth: 820,
-      segment: 'middle'
-    });
-
-    expect(middle.top).toBe(layout.middle.top);
-    expect(middle.height).toBe(layout.middle.height);
-  });
-
-  it('uses the shared segment layout to choose visible render segments', () => {
+  it('uses the shared slice layout to choose visible render slices', () => {
     const pageTop = 100;
     const pageHeight = 917;
     const pageScale = 0.9975;
-    const layout = getPdfSegmentCssLayout({
+    const slices = getPdfRenderSlices({
       pageHeight,
       pageScale,
       devicePixelRatio: 2,
@@ -132,38 +114,36 @@ describe('resolvePdfDeviceScale', () => {
       viewportWidth: 820
     });
 
-    expect(
-      getVisiblePdfSegments({
-        pageTop,
-        pageHeight,
-        pageScale,
-        viewportTop: pageTop + layout.top.bottom - 5,
-        viewportHeight: 10,
-        devicePixelRatio: 2,
-        coarsePointer: true,
-        viewportWidth: 820
-      })
-    ).toEqual(['top', 'middle']);
+    const nearBoundarySlices = getVisiblePdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices[0]!.bottom - 5,
+      viewportHeight: 10,
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+    expect(nearBoundarySlices.map((slice) => slice.id)).toEqual([slices[0]!.id, slices[1]!.id]);
 
-    expect(
-      getVisiblePdfSegments({
-        pageTop,
-        pageHeight,
-        pageScale,
-        viewportTop: pageTop + layout.middle.top + 1,
-        viewportHeight: Math.max(2, layout.middle.height - 2),
-        devicePixelRatio: 2,
-        coarsePointer: true,
-        viewportWidth: 820
-      })
-    ).toEqual(['middle']);
+    const interiorSlices = getVisiblePdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices[1]!.top + 1,
+      viewportHeight: Math.max(2, slices[1]!.height - 2),
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+    expect(interiorSlices.map((slice) => slice.id)).toEqual([slices[1]!.id]);
   });
 
-  it('renders the most-overlapped visible segment first', () => {
+  it('renders the most-overlapped visible slice first', () => {
     const pageTop = 100;
     const pageHeight = 917;
     const pageScale = 0.9975;
-    const layout = getPdfSegmentCssLayout({
+    const slices = getPdfRenderSlices({
       pageHeight,
       pageScale,
       devicePixelRatio: 2,
@@ -171,36 +151,105 @@ describe('resolvePdfDeviceScale', () => {
       viewportWidth: 820
     });
 
-    expect(
-      getVisiblePdfSegments({
-        pageTop,
-        pageHeight,
-        pageScale,
-        viewportTop: pageTop + layout.middle.bottom - 40,
-        viewportHeight: 120,
-        devicePixelRatio: 2,
-        coarsePointer: true,
-        viewportWidth: 820
-      })
-    ).toEqual(['bottom', 'middle']);
+    const orderedVisibleSlices = getVisiblePdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices[1]!.bottom - 40,
+      viewportHeight: 120,
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
 
-    expect(
-      getVisiblePdfSegments({
-        pageTop,
-        pageHeight,
-        pageScale,
-        viewportTop: pageTop + layout.top.bottom - 40,
-        viewportHeight: 120,
-        devicePixelRatio: 2,
-        coarsePointer: true,
-        viewportWidth: 820
-      })
-    ).toEqual(['middle', 'top']);
+    expect(orderedVisibleSlices.map((slice) => slice.id)).toEqual([slices[2]!.id, slices[1]!.id]);
   });
 
-  it('falls back to top segment when the viewport is outside the page shell', () => {
+  it('prefers lower visible slices first when resuming after upward scroll', () => {
+    const pageTop = 100;
+    const pageHeight = 917;
+    const pageScale = 0.9975;
+    const slices = getPdfRenderSlices({
+      pageHeight,
+      pageScale,
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    const upwardVisibleSlices = getVisiblePdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices[1]!.bottom - 40,
+      viewportHeight: 120,
+      scrollDirection: 'up',
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    expect(upwardVisibleSlices.map((slice) => slice.id)).toEqual([slices[2]!.id, slices[1]!.id]);
+  });
+
+  it('prefers upper visible slices first when resuming after downward scroll', () => {
+    const pageTop = 100;
+    const pageHeight = 917;
+    const pageScale = 0.9975;
+    const slices = getPdfRenderSlices({
+      pageHeight,
+      pageScale,
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    const downwardVisibleSlices = getVisiblePdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices[1]!.bottom - 40,
+      viewportHeight: 120,
+      scrollDirection: 'down',
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    expect(downwardVisibleSlices.map((slice) => slice.id)).toEqual([slices[1]!.id, slices[2]!.id]);
+  });
+
+  it('orders off-screen slices by viewport proximity after visible ones', () => {
+    const pageTop = 100;
+    const pageHeight = 917;
+    const pageScale = 1;
+    const slices = getPdfRenderSlices({
+      pageHeight,
+      pageScale,
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    const orderedSlices = getOrderedPdfRenderSlices({
+      pageTop,
+      pageHeight,
+      pageScale,
+      viewportTop: pageTop + slices.at(-1)!.top + 10,
+      viewportHeight: Math.max(40, slices.at(-1)!.height - 20),
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
+    });
+
+    expect(orderedSlices.map((slice) => slice.id)).toEqual(
+      [...slices].reverse().map((slice) => slice.id)
+    );
+  });
+
+  it('falls back to the first slice when the viewport is outside the page shell', () => {
     expect(
-      getVisiblePdfSegments({
+      getVisiblePdfRenderSlices({
         pageTop: 500,
         pageHeight: 917,
         pageScale: 1,
@@ -209,8 +258,8 @@ describe('resolvePdfDeviceScale', () => {
         devicePixelRatio: 2,
         coarsePointer: true,
         viewportWidth: 820
-      })
-    ).toEqual(['top']);
+      }).map((slice) => slice.id)
+    ).toEqual(['slice:0']);
   });
 
   it('changes render strategy and render-state identity when low-data mode switches to full-page rendering', () => {
@@ -222,13 +271,19 @@ describe('resolvePdfDeviceScale', () => {
       pageScale: 1,
       pageWidth: 780,
       pageHeight: 960,
-      connectionQuality: 'medium'
+      connectionQuality: 'medium',
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
     });
     const fullKey = buildPdfRenderStateKey({
       pageScale: 1,
       pageWidth: 780,
       pageHeight: 960,
-      connectionQuality: 'slow'
+      connectionQuality: 'slow',
+      devicePixelRatio: 2,
+      coarsePointer: true,
+      viewportWidth: 820
     });
 
     expect(segmentedKey).not.toBe(fullKey);
@@ -241,15 +296,44 @@ describe('resolvePdfDeviceScale', () => {
       pageScale: 1,
       pageWidth: 780,
       pageHeight: 960,
-      connectionQuality: 'fast'
+      connectionQuality: 'fast',
+      devicePixelRatio: 2,
+      coarsePointer: false,
+      viewportWidth: 1366
     });
     const resizedKey = buildPdfRenderStateKey({
       pageScale: 1.125,
       pageWidth: 877.5,
       pageHeight: 1080,
-      connectionQuality: 'fast'
+      connectionQuality: 'fast',
+      devicePixelRatio: 2,
+      coarsePointer: false,
+      viewportWidth: 1366
     });
 
     expect(initialKey).not.toBe(resizedKey);
+  });
+
+  it('changes render-state identity when device scale changes', () => {
+    const laptopKey = buildPdfRenderStateKey({
+      pageScale: 1,
+      pageWidth: 780,
+      pageHeight: 960,
+      connectionQuality: 'fast',
+      devicePixelRatio: 1,
+      coarsePointer: false,
+      viewportWidth: 1366
+    });
+    const retinaKey = buildPdfRenderStateKey({
+      pageScale: 1,
+      pageWidth: 780,
+      pageHeight: 960,
+      connectionQuality: 'fast',
+      devicePixelRatio: 2,
+      coarsePointer: false,
+      viewportWidth: 1366
+    });
+
+    expect(laptopKey).not.toBe(retinaKey);
   });
 });

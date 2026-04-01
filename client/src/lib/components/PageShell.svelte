@@ -24,17 +24,21 @@
   import {
     buildPdfRenderStateKey,
     cancelCanvasRender,
+    FULL_PAGE_RENDER_SEGMENT,
+    getOrderedPdfRenderSlices,
     getPdfRenderEnvironment,
     getPdfRenderStrategy,
-    getPdfSegmentCssLayout,
-    getVisiblePdfSegments,
+    getPdfRenderSlices,
+    getVisiblePdfRenderSlices,
     renderPdfPage,
     measurePreviewLoad,
-    type PdfRenderSegment
+    type PdfRenderDirection,
+    type PdfRenderSegment,
+    type PdfRenderSlice
   } from '../pdf';
   import { cancelRender, scheduleRender } from '../renderScheduler';
   import type { ConnectionQuality, NetworkConfig } from '../networkMonitor';
-  import type { PageShellLayout } from '../reader/layout';
+  import { getPageVisibilityMetrics, type PageShellLayout } from '../reader/layout';
   import {
     createStroke,
     eraseAnnotations,
@@ -49,6 +53,11 @@
     type EraserStrokeMode,
     type StrokePresetValues
   } from '../strokeSettings';
+  import {
+    selectionRegionFromLassoPoints,
+    selectionBoundsRegionFromAnnotations,
+    type SelectionRegion
+  } from '../selectionRegion';
 
   // ── Props ──
 
@@ -67,6 +76,7 @@
   export let activePageIndex = 0;
   export let viewportTop = 0;
   export let viewportHeight = 0;
+  export let scrollDirection: PdfRenderDirection = 'idle';
   export let connectionQuality: ConnectionQuality = 'fast';
   export let networkConfig: NetworkConfig = {
     rangeChunkSize: 1024 * 1024,
@@ -92,12 +102,14 @@
   export let tapeStraightMode = true;
   export let tapeOpacity = 1.0;
   export let selectedAnnotationIds: string[] = [];
+  export let selectionRegion: SelectionRegion | null = null;
   /** Set of tape annotation IDs currently revealed (transparent) for study peek */
   export let revealedTapeIds: Set<string> = new Set();
   export let onPenSessionChange: (active: boolean) => void = () => undefined;
   export let onAppend: (pageId: string, annotations: Annotation[]) => void = () => undefined;
   export let onReplace: (pageId: string, annotations: Annotation[]) => void = () => undefined;
-  export let onSelectionChange: (pageId: string, annotationIds: string[]) => void = () => undefined;
+  export let onMoveSelection: (pageId: string, annotationIds: string[], previewAnnotations: PageAnnotation[], dropPoint: PagePoint) => void | Promise<void> = () => undefined;
+  export let onSelectionChange: (pageId: string, annotationIds: string[], region: SelectionRegion | null) => void = () => undefined;
   export let onPreviewAnnotationsChange: (pageId: string, annotations: PageAnnotation[] | null) => void = () => undefined;
   export let onToolGestureStart: () => void = () => undefined;
   /** Called when the user taps or holds a tape strip to peek at content underneath */
@@ -106,9 +118,8 @@
   // ── Internal state ──
 
   let fullCanvas: HTMLCanvasElement | null = null;
-  let topSegmentCanvas: HTMLCanvasElement | null = null;
-  let middleSegmentCanvas: HTMLCanvasElement | null = null;
-  let bottomSegmentCanvas: HTMLCanvasElement | null = null;
+  let sliceCanvases: Record<string, HTMLCanvasElement> = {};
+  let pdfSlices: PdfRenderSlice[] = [];
   let interactionLayer: HTMLDivElement | null = null;
   let renderToken = 0;
   let renderedStateKey = '';
@@ -132,15 +143,13 @@
   let renderIntentKey = '';
   let renderStateKey = '';
   let previousRenderStateKey = '';
+  let previewFadeReady = layout.page.kind !== 'pdf';
   let eraserIndicatorPoint: PagePoint | null = null;
   let eraserIndicatorVisible = false;
   let eraserIndicatorStyle = '';
   let laserPointerVisible = false;
   let laserPointerStyle = '';
   let laserPointerPath = '';
-  let localSelectedAnnotationIds: string[] = [];
-  // Stores the last lasso selection area so clicks inside it can start a move gesture
-  let lassoSelectionRegion: { mode: 'rectangle'; left: number; top: number; right: number; bottom: number } | { mode: 'freehand'; polygon: PagePoint[] } | null = null;
   // Tape peek/reveal state — tracks hold-to-peek gesture
   let tapePeekPointerId: number | null = null;
   let tapePeekTapeId: string | null = null;
@@ -292,10 +301,32 @@
     appendPoints(pageCoordinates(event));
   }
 
+  function latestPagePoint(event: PointerEvent): PagePoint | null {
+    return pageCoordinates(event).at(-1) ?? null;
+  }
+
+  function selectedAnnotationsBoundsRegion(
+    sourceAnnotations: PageAnnotation[] = annotations,
+    annotationIds: string[] = selectedAnnotationIds
+  ): SelectionRegion | null {
+    const selectedIds = new Set(annotationIds);
+    return selectionBoundsRegionFromAnnotations(sourceAnnotations.filter((annotation) => selectedIds.has(annotation.id)));
+  }
+
+  function updateMovePreview(point: PagePoint): void {
+    if (!moveGesture) {
+      return;
+    }
+
+    activePoints = [moveGesture.origin, point];
+    previewAnnotations = moveAnnotations(moveGesture.annotationIds, moveGesture.startAnnotations, moveGesture.origin, point);
+  }
+
   function finishStroke(): void {
     if (moveGesture) {
+      const dropPoint = activePoints.at(-1) ?? moveGesture.origin;
       if (previewAnnotations) {
-        onReplace(layout.page.id, previewAnnotations);
+        void onMoveSelection(layout.page.id, moveGesture.annotationIds, previewAnnotations, dropPoint);
       }
 
       activePointerId = null;
@@ -354,27 +385,10 @@
 
     if (tool === 'lasso') {
       const nextSelection = selectAnnotationsFromPath(activePoints);
-      localSelectedAnnotationIds = nextSelection;
-      onSelectionChange(layout.page.id, nextSelection);
+      const nextRegion = nextSelection.length > 0 && activePoints.length > 1 ? selectionRegionFromLassoPoints(activePoints, lassoMode) : null;
+      onSelectionChange(layout.page.id, nextSelection, nextRegion);
 
-      // Store the selection region so the user can click anywhere inside it to move
-      if (nextSelection.length > 0 && activePoints.length > 1) {
-        if (lassoMode === 'freehand' && activePoints.length > 2) {
-          lassoSelectionRegion = { mode: 'freehand', polygon: closePolygon(activePoints) };
-        } else {
-          const first = activePoints[0];
-          const last = activePoints[activePoints.length - 1];
-          lassoSelectionRegion = {
-            mode: 'rectangle',
-            left: Math.min(first.x, last.x),
-            top: Math.min(first.y, last.y),
-            right: Math.max(first.x, last.x),
-            bottom: Math.max(first.y, last.y)
-          };
-        }
-      } else {
-        lassoSelectionRegion = null;
-      }
+      // A new lasso selection replaces the old committed selection region in the reader.
     }
 
     if (tool === 'laser') {
@@ -395,7 +409,6 @@
     previewAnnotations = null;
     moveGesture = null;
     shapeGesture = null;
-    lassoSelectionRegion = null;
     clearEraserIndicator();
     clearLaserPointer();
     setInkSession(false);
@@ -450,42 +463,84 @@
     }
   }
 
-  // ── PDF segment rendering — pages render in thirds (top/middle/bottom) ──
+  // ── PDF slice rendering — pages render in vertical device-pixel slices ──
 
-  function pdfSegmentCssLayout() {
-    return getPdfSegmentCssLayout({
-      pageHeight: layout.page.height,
-      pageScale: layout.scale,
-      ...getPdfRenderEnvironment()
-    });
+  function setSliceCanvas(sliceId: string, canvas: HTMLCanvasElement | null): void {
+    if (canvas) {
+      if (sliceCanvases[sliceId] !== canvas) {
+        sliceCanvases = { ...sliceCanvases, [sliceId]: canvas };
+      }
+      return;
+    }
+
+    if (!(sliceId in sliceCanvases)) {
+      return;
+    }
+
+    const nextCanvases = { ...sliceCanvases };
+    delete nextCanvases[sliceId];
+    sliceCanvases = nextCanvases;
   }
 
-  function visibleRenderSegments(): PdfRenderSegment[] {
-    return getVisiblePdfSegments({
+  function registerSliceCanvas(node: HTMLCanvasElement, sliceId: string) {
+    let currentSliceId = sliceId;
+    setSliceCanvas(currentSliceId, node);
+
+    return {
+      update(nextSliceId: string) {
+        if (nextSliceId === currentSliceId) {
+          return;
+        }
+
+        setSliceCanvas(currentSliceId, null);
+        currentSliceId = nextSliceId;
+        setSliceCanvas(currentSliceId, node);
+      },
+      destroy() {
+        setSliceCanvas(currentSliceId, null);
+      }
+    };
+  }
+
+  function orderedRenderSlices(): PdfRenderSlice[] {
+    return getOrderedPdfRenderSlices({
       pageTop: layout.top,
       pageHeight: layout.page.height,
       pageScale: layout.scale,
       viewportTop,
       viewportHeight,
+      scrollDirection,
+      ...getPdfRenderEnvironment()
+    });
+  }
+
+  function visibleRenderSegments(): PdfRenderSlice[] {
+    return getVisiblePdfRenderSlices({
+      pageTop: layout.top,
+      pageHeight: layout.page.height,
+      pageScale: layout.scale,
+      viewportTop,
+      viewportHeight,
+      scrollDirection,
       ...getPdfRenderEnvironment()
     });
   }
 
   function fullRenderSegments(): PdfRenderSegment[] {
     if (!useSegmentedPdfRender()) {
-      return ['full'];
+      return [FULL_PAGE_RENDER_SEGMENT];
     }
 
-    return ['top', 'middle', 'bottom'];
+    return pdfSlices;
   }
 
   function targetRenderSegments(): PdfRenderSegment[] {
     if (!useSegmentedPdfRender()) {
-      return ['full'];
+      return [FULL_PAGE_RENDER_SEGMENT];
     }
 
-    // Only render the segments actually in the viewport, even for the active page.
-    // The active page gets ALL segments eventually via eager follow-up below, but
+    // Only render the slices actually in the viewport, even for the active page.
+    // The active page gets ALL slices eventually via eager follow-up below, but
     // the initial render only covers what's visible so isReady fires faster.
     return visibleRenderSegments();
   }
@@ -495,7 +550,7 @@
   }
 
   function segmentKey(renderKey: string, segment: PdfRenderSegment): string {
-    return `${renderKey}:${segment}`;
+    return `${renderKey}:${segment.id}`;
   }
 
   function hasSegment(renderKey: string, segment: PdfRenderSegment): boolean {
@@ -503,19 +558,11 @@
   }
 
   function canvasForSegment(segment: PdfRenderSegment): HTMLCanvasElement | null {
-    if (segment === 'full') {
+    if (segment.kind === 'full') {
       return fullCanvas;
     }
 
-    if (segment === 'top') {
-      return topSegmentCanvas;
-    }
-
-    if (segment === 'middle') {
-      return middleSegmentCanvas;
-    }
-
-    return bottomSegmentCanvas;
+    return sliceCanvases[segment.id] ?? null;
   }
 
   function cancelSegmentRenders(): void {
@@ -523,16 +570,10 @@
       cancelCanvasRender(fullCanvas);
     }
 
-    if (topSegmentCanvas) {
-      cancelCanvasRender(topSegmentCanvas);
-    }
-
-    if (middleSegmentCanvas) {
-      cancelCanvasRender(middleSegmentCanvas);
-    }
-
-    if (bottomSegmentCanvas) {
-      cancelCanvasRender(bottomSegmentCanvas);
+    for (const canvas of Object.values(sliceCanvases)) {
+      if (canvas) {
+        cancelCanvasRender(canvas);
+      }
     }
   }
 
@@ -555,10 +596,8 @@
     fullQualityReady = false;
   }
 
-  function segmentCanvasStyle(segment: Exclude<PdfRenderSegment, 'full'>): string {
-    const bounds = pdfSegmentCssLayout()[segment];
-
-    return `top:${bounds.top}px; height:${bounds.height}px;`;
+  function segmentCanvasStyle(segment: PdfRenderSlice): string {
+    return `top:${segment.top}px; height:${segment.height}px;`;
   }
 
   function fullCanvasStyle(): string {
@@ -580,6 +619,19 @@
     if (isReady) {
       pendingScaleChange = false;
     }
+  }
+
+  function visibleQualityReadyFor(renderKey: string): boolean {
+    if (layout.page.kind !== 'pdf') {
+      return true;
+    }
+
+    if (!renderKey) {
+      return false;
+    }
+
+    const targetSegments = targetRenderSegments();
+    return targetSegments.length > 0 && targetSegments.every((segment) => hasSegment(renderKey, segment));
   }
 
   function previewDidLoad(event: Event): void {
@@ -623,7 +675,7 @@
     }
 
     if (useSegmentedPdfRender()) {
-      if (!topSegmentCanvas || !middleSegmentCanvas || !bottomSegmentCanvas) {
+      if (pdfSlices.length === 0 || pdfSlices.some((slice) => !sliceCanvases[slice.id])) {
         return;
       }
     } else if (!fullCanvas) {
@@ -638,10 +690,10 @@
     if (renderedStateKey !== nextRenderKey) {
       renderedStateKey = nextRenderKey;
       renderedSegments = new Set<string>();
-      // Keep isReady true until the first new segment actually starts rendering.
+      // Keep isReady true until the first new slice actually starts rendering.
       // This keeps the old canvas visible (at old resolution) instead of flashing
       // to the JPEG preview. The canvas will be cleared by ensureCanvasSize when
-      // the first segment render begins.
+      // the first slice render begins.
       pendingScaleChange = true;
       fullQualityReady = false;
     }
@@ -651,8 +703,9 @@
     }
 
     const visibleSegments = targetRenderSegments();
+    const fullSegments = useSegmentedPdfRender() ? orderedRenderSlices() : [FULL_PAGE_RENDER_SEGMENT];
     const missingVisibleSegments = visibleSegments.filter((segment) => !hasSegment(nextRenderKey, segment));
-    const missingFullSegments = fullRenderSegments().filter((segment) => !hasSegment(nextRenderKey, segment));
+    const missingFullSegments = fullSegments.filter((segment) => !hasSegment(nextRenderKey, segment));
     if (missingFullSegments.length === 0) {
       recomputeRenderReadiness(nextRenderKey);
       return;
@@ -663,7 +716,7 @@
     fullQualityReady = false;
     debugTimeline.log(
       'render-start',
-      `Render page ${layout.pageIndex + 1} visible=${missingVisibleSegments.join(', ') || 'none'} remaining=${missingFullSegments.join(', ')} at state ${nextRenderKey}`
+      `Render page ${layout.pageIndex + 1} visible=${missingVisibleSegments.map((segment) => segment.id).join(', ') || 'none'} remaining=${missingFullSegments.map((segment) => segment.id).join(', ')} at state ${nextRenderKey}`
     );
 
     try {
@@ -678,8 +731,7 @@
           page: layout.page,
           file,
           scale: layout.scale,
-          segment,
-          segmentCanvas: segment !== 'full'
+          segment
         });
 
         if (token !== renderToken) {
@@ -692,17 +744,9 @@
 
       if (token === renderToken) {
         recomputeRenderReadiness(nextRenderKey);
-        debugTimeline.log('render-end', `Rendered visible segments for page ${layout.pageIndex + 1}`);
+        debugTimeline.log('render-end', `Rendered visible slices for page ${layout.pageIndex + 1}`);
 
-        // Eagerly render remaining off-screen segments, ordered by proximity
-        // to the visible area so the next-to-scroll-into segment finishes first.
-        const segmentOrder: PdfRenderSegment[] = ['top', 'middle', 'bottom'];
-        const visibleSegs = visibleRenderSegments();
-        const hasTop = visibleSegs.includes('top');
-        const hasBottom = visibleSegs.includes('bottom');
-        // If bottom is visible but top isn't, reverse so middle renders before top
-        if (hasBottom && !hasTop) segmentOrder.reverse();
-        const remaining = segmentOrder.filter((segment) => !hasSegment(nextRenderKey, segment));
+        const remaining = fullSegments.filter((segment) => !hasSegment(nextRenderKey, segment));
         for (const segment of remaining) {
           const targetCanvas = canvasForSegment(segment);
           if (token !== renderToken || !targetCanvas || !file) break;
@@ -712,8 +756,7 @@
               page: layout.page,
               file,
               scale: layout.scale,
-              segment,
-              segmentCanvas: segment !== 'full'
+              segment
             });
             if (token !== renderToken) break;
             renderedSegments = new Set(renderedSegments).add(segmentKey(nextRenderKey, segment));
@@ -780,23 +823,29 @@
 
       // Allow drag-to-move if clicking inside the existing selection region.
       // This lets the user click anywhere in the lasso area, not just on a specific annotation.
-      if (localSelectedAnnotationIds.length > 0 && lassoSelectionRegion) {
+      const currentSelectionRegion = selectedAnnotationRegion();
+      if (selectedAnnotationIds.length > 0 && currentSelectionRegion) {
         let insideRegion = false;
-        if (lassoSelectionRegion.mode === 'rectangle') {
-          const r = lassoSelectionRegion;
+        if (currentSelectionRegion.mode === 'rectangle') {
+          const r = currentSelectionRegion;
           insideRegion = point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
         } else {
-          insideRegion = pointInPolygon(point, lassoSelectionRegion.polygon);
+          insideRegion = pointInPolygon(point, currentSelectionRegion.polygon);
         }
 
         if (insideRegion) {
-          beginMoveGesture(event, localSelectedAnnotationIds, point);
+          beginMoveGesture(event, selectedAnnotationIds, point);
           return;
         }
       }
 
+      const hitAnnotation = findAnnotationAtPoint(point);
+      if (hitAnnotation && selectedAnnotationIds.includes(hitAnnotation.id)) {
+        beginMoveGesture(event, selectedAnnotationIds, point);
+        return;
+      }
+
       // Start a new lasso selection gesture and dismiss the tool flyout
-      lassoSelectionRegion = null;
       onToolGestureStart();
       beginStroke(event);
       return;
@@ -848,7 +897,7 @@
 
       const existingNote = findStickyNoteAtPoint(point);
       if (existingNote) {
-        setSelectedAnnotationIds([existingNote.id]);
+        onSelectionChange(layout.page.id, [existingNote.id], selectionBoundsRegionFromAnnotations([existingNote]));
         beginMoveGesture(event, [existingNote.id], point);
         return;
       }
@@ -865,7 +914,7 @@
         height: 144,
         fontSize: Math.max(16, textFontSize - 4)
       };
-      setSelectedAnnotationIds([note.id]);
+      onSelectionChange(layout.page.id, [note.id], null);
       onReplace(layout.page.id, [...annotations, note] as Annotation[]);
       clearPointerState();
       return;
@@ -897,17 +946,18 @@
     }
 
     event.preventDefault();
-    continueStroke(event);
 
     if (moveGesture) {
-      const point = activePoints.at(-1);
+      const point = latestPagePoint(event);
       if (!point) {
         return;
       }
 
-      previewAnnotations = moveAnnotations(moveGesture.annotationIds, moveGesture.startAnnotations, moveGesture.origin, point);
+      updateMovePreview(point);
       return;
     }
+
+    continueStroke(event);
 
     if (tool === 'shape' && shapeGesture) {
       const point = activePoints[activePoints.length - 1];
@@ -959,17 +1009,18 @@
     }
 
     event.preventDefault();
-    continueStroke(event);
 
     if (moveGesture) {
-      const point = activePoints.at(-1);
+      const point = latestPagePoint(event);
       if (!point) {
         return;
       }
 
-      previewAnnotations = moveAnnotations(moveGesture.annotationIds, moveGesture.startAnnotations, moveGesture.origin, point);
+      updateMovePreview(point);
       return;
     }
+
+    continueStroke(event);
 
     if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
       const strokePoints = currentStrokePoints();
@@ -1014,6 +1065,16 @@
     }
 
     event.preventDefault();
+    if (moveGesture) {
+      const point = latestPagePoint(event);
+      if (point) {
+        updateMovePreview(point);
+      }
+      finishStroke();
+      releaseCapturedPointer(event.pointerId);
+      return;
+    }
+
     continueStroke(event);
     finishStroke();
     releaseCapturedPointer(event.pointerId);
@@ -1159,9 +1220,12 @@
     laserPointerStyle = `width:${18}px; height:${18}px; left:${latestPoint.x * layout.scale - 9}px; top:${latestPoint.y * layout.scale - 9}px;`;
   }
 
-  function setSelectedAnnotationIds(nextIds: string[]): void {
-    localSelectedAnnotationIds = nextIds;
-    onSelectionChange(layout.page.id, nextIds);
+  function selectedAnnotationRegion(): SelectionRegion | null {
+    if (selectedAnnotationIds.length === 0) {
+      return null;
+    }
+
+    return selectionRegion ?? selectedAnnotationsBoundsRegion();
   }
 
   // ── Geometry utilities — hit testing, bounds, distance calculations ──
@@ -1527,18 +1591,8 @@
   }
 
   function moveAnnotations(annotationIds: string[], startAnnotations: PageAnnotation[], origin: PagePoint, point: PagePoint): PageAnnotation[] {
-    const selectionBounds = startAnnotations.reduce(
-      (bounds, annotation) => {
-        const nextBounds = annotationBounds(annotation);
-        return {
-          left: Math.min(bounds.left, nextBounds.left),
-          top: Math.min(bounds.top, nextBounds.top)
-        };
-      },
-      { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY }
-    );
-    const dx = Math.max(point.x - origin.x, -selectionBounds.left);
-    const dy = Math.max(point.y - origin.y, -selectionBounds.top);
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
     const selectedIds = new Set(annotationIds);
     const moved = new Map(startAnnotations.map((annotation) => [annotation.id, moveAnnotation(annotation, dx, dy)]));
 
@@ -1567,7 +1621,8 @@
     const right = Math.max(first.x, last.x);
     const top = Math.min(first.y, last.y);
     const bottom = Math.max(first.y, last.y);
-    const polygon = lassoMode === 'freehand' && points.length > 2 ? closePolygon(points) : null;
+    const region = selectionRegionFromLassoPoints(points, lassoMode);
+    const polygon = region?.mode === 'freehand' ? region.polygon : null;
 
     return annotations
       .filter((annotation) => {
@@ -1579,20 +1634,6 @@
         return !(bounds.right < left || bounds.left > right || bounds.bottom < top || bounds.top > bottom);
       })
       .map((annotation) => annotation.id);
-  }
-
-  function closePolygon(points: PagePoint[]): PagePoint[] {
-    if (points.length < 2) {
-      return points;
-    }
-
-    const first = points[0];
-    const last = points[points.length - 1];
-    if (first.x === last.x && first.y === last.y) {
-      return points;
-    }
-
-    return [...points, { ...first }];
   }
 
   // ── Shape tool — create, move, resize ──
@@ -1724,7 +1765,7 @@
   // ── Reactive declarations ──
 
   $: displayAnnotations = previewAnnotations ?? annotations;
-  $: onPreviewAnnotationsChange(layout.page.id, previewAnnotations);
+  $: onPreviewAnnotationsChange(layout.page.id, moveGesture ? null : previewAnnotations);
   $: selectedShape =
     displayAnnotations.find(
       (annotation): annotation is ShapeAnnotation => annotation.type === 'shape' && annotation.id === selectedShapeId
@@ -1756,7 +1797,8 @@
           pageScale: layout.scale,
           pageWidth: layout.width,
           pageHeight: layout.height,
-          connectionQuality
+          connectionQuality,
+          ...getPdfRenderEnvironment()
         })
       : '';
 
@@ -1770,14 +1812,21 @@
       ? `${renderStateKey}:${viewportTop.toFixed(4)}:${viewportHeight.toFixed(4)}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
       : '';
 
+  $: pageVisibility = getPageVisibilityMetrics(layout, viewportTop, viewportHeight);
+  $: previewFadeReady = fullQualityReady || visibleQualityReadyFor(renderedStateKey);
+
   // All connection speeds get full-res PDF.js rendering. On slow/medium,
   // the per-page PDF endpoint provides a self-contained ~100-500KB file
   // that downloads in one request. No dwell delay needed.
-  $: if (((useSegmentedPdfRender() && topSegmentCanvas && middleSegmentCanvas && bottomSegmentCanvas) || (!useSegmentedPdfRender() && fullCanvas)) && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
+  $: if (((useSegmentedPdfRender() && pdfSlices.length > 0 && pdfSlices.every((slice) => !!sliceCanvases[slice.id])) || (!useSegmentedPdfRender() && fullCanvas)) && file && layout.page.kind === 'pdf' && renderIntentKey && allowRender) {
     scheduleRender(
       layout.page.id,
-      layout.pageIndex,
-      activePageIndex,
+      {
+        pageIndex: layout.pageIndex,
+        activeIndex: activePageIndex,
+        visibleRatio: pageVisibility.visibleRatio,
+        visiblePixels: pageVisibility.visiblePixels
+      },
       () => renderPdfIfNeeded(),
       () => {
         renderToken++;
@@ -1794,10 +1843,8 @@
     clearLaserPointer();
   }
 
-  $: if (tool !== 'lasso' && localSelectedAnnotationIds.length > 0) {
-    localSelectedAnnotationIds = [];
-    lassoSelectionRegion = null;
-    onSelectionChange(layout.page.id, []);
+  $: if (tool !== 'lasso' && selectedAnnotationIds.length > 0) {
+    onSelectionChange(layout.page.id, [], null);
   }
 
   $: if (tool !== 'eraser' && eraserIndicatorVisible) {
@@ -1805,6 +1852,15 @@
   }
 
   $: previewWidth = Math.max(120, Math.min(Math.ceil(layout.width), networkConfig.maxPreviewWidth));
+
+  $: pdfSlices =
+    layout.page.kind === 'pdf' && useSegmentedPdfRender()
+      ? getPdfRenderSlices({
+          pageHeight: layout.page.height,
+          pageScale: layout.scale,
+          ...getPdfRenderEnvironment()
+        })
+      : [];
 
   // On slow connections, skip preview images for pages far from the active page.
   // This prevents preview HTTP requests from consuming connection slots that the
@@ -1841,11 +1897,11 @@
     eraserIndicatorPoint && eraserIndicatorVisible
       ? `width:${currentEraserRadius() * 2 * layout.scale}px; height:${currentEraserRadius() * 2 * layout.scale}px; left:${eraserIndicatorPoint.x * layout.scale - currentEraserRadius() * layout.scale}px; top:${eraserIndicatorPoint.y * layout.scale - currentEraserRadius() * layout.scale}px;`
       : '';
-  $: localSelectedAnnotationIds = selectedAnnotationIds;
 </script>
 
 <article
   class:active={isActive}
+  class:moving-selection={!!moveGesture}
   class="reader-page-shell"
   style={`top:${layout.top}px; left:${layout.left}px; width:${layout.width}px; height:${layout.height}px;`}
 >
@@ -1858,7 +1914,8 @@
         <img
           alt=""
           aria-hidden="true"
-          class:ready={fullQualityReady}
+          class:loaded={previewLoaded}
+          class:ready={previewFadeReady}
           class="reader-pdf-preview"
           decoding="async"
           fetchpriority={isActive ? 'high' : 'low'}
@@ -1868,28 +1925,18 @@
         />
       {/if}
       {#if useSegmentedPdfRender()}
-        <canvas
-          bind:this={topSegmentCanvas}
-          class:ready={segmentReady('top')}
-          class="reader-pdf-canvas reader-pdf-canvas-top"
-          style={segmentCanvasStyle('top')}
-        ></canvas>
-        <canvas
-          bind:this={middleSegmentCanvas}
-          class:ready={segmentReady('middle')}
-          class="reader-pdf-canvas reader-pdf-canvas-middle"
-          style={segmentCanvasStyle('middle')}
-        ></canvas>
-        <canvas
-          bind:this={bottomSegmentCanvas}
-          class:ready={segmentReady('bottom')}
-          class="reader-pdf-canvas reader-pdf-canvas-bottom"
-          style={segmentCanvasStyle('bottom')}
-        ></canvas>
+        {#each pdfSlices as slice (slice.id)}
+          <canvas
+            use:registerSliceCanvas={slice.id}
+            class:ready={segmentReady(slice)}
+            class="reader-pdf-canvas"
+            style={segmentCanvasStyle(slice)}
+          ></canvas>
+        {/each}
       {:else}
         <canvas
           bind:this={fullCanvas}
-          class:ready={segmentReady('full')}
+          class:ready={segmentReady(FULL_PAGE_RENDER_SEGMENT)}
           class="reader-pdf-canvas reader-pdf-canvas-full"
           style={fullCanvasStyle()}
         ></canvas>
@@ -2029,7 +2076,7 @@
         {/if}
       {/each}
 
-      {#each displayAnnotations.filter((annotation) => localSelectedAnnotationIds.includes(annotation.id)) as annotation (annotation.id)}
+      {#each displayAnnotations.filter((annotation) => selectedAnnotationIds.includes(annotation.id)) as annotation (annotation.id)}
         {#key `${annotation.id}:selection`}
           {@const bounds = annotationBounds(annotation)}
           <rect
@@ -2047,7 +2094,7 @@
         {/key}
       {/each}
 
-      {#if tool === 'lasso' && activePoints.length > 1}
+      {#if tool === 'lasso' && activePoints.length > 1 && !moveGesture}
         {#if lassoMode === 'freehand'}
           <path d={strokePath(activePoints, layout.scale)} fill="none" stroke="#9a63d6" stroke-dasharray="8 6" stroke-width="2.2"></path>
         {:else}

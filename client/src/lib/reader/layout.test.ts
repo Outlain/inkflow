@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PageRecord } from '@shared/contracts';
-import { ReaderLayoutEngine } from './layout';
+import { getPageVisibilityMetrics, ReaderLayoutEngine } from './layout';
 
 function page(id: string, width: number, height: number): PageRecord {
   return {
@@ -50,5 +50,15 @@ describe('ReaderLayoutEngine', () => {
     const scrollTop = targetPage.top - 120;
 
     expect(engine.getActivePage(layout, scrollTop, 1200)).toBe(863);
+  });
+
+  it('measures per-page visible coverage for scheduler prioritization', () => {
+    const metrics = getPageVisibilityMetrics({ top: 100, height: 900 }, 280, 540);
+    expect(metrics.visiblePixels).toBe(540);
+    expect(metrics.visibleRatio).toBeCloseTo(0.6, 5);
+
+    const hiddenMetrics = getPageVisibilityMetrics({ top: 1200, height: 900 }, 0, 400);
+    expect(hiddenMetrics.visiblePixels).toBe(0);
+    expect(hiddenMetrics.visibleRatio).toBe(0);
   });
 });

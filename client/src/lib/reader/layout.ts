@@ -27,6 +27,29 @@ export interface VisibleWindow {
   end: number;
 }
 
+export interface PageVisibilityMetrics {
+  visiblePixels: number;
+  visibleRatio: number;
+}
+
+export function getPageVisibilityMetrics(
+  page: Pick<PageShellLayout, 'top' | 'height'>,
+  scrollTop: number,
+  viewportHeight: number
+): PageVisibilityMetrics {
+  if (viewportHeight <= 0 || page.height <= 0) {
+    return { visiblePixels: 0, visibleRatio: 0 };
+  }
+
+  const viewportBottom = scrollTop + viewportHeight;
+  const pageBottom = page.top + page.height;
+  const visiblePixels = Math.max(0, Math.min(pageBottom, viewportBottom) - Math.max(page.top, scrollTop));
+  return {
+    visiblePixels,
+    visibleRatio: Math.min(1, visiblePixels / page.height)
+  };
+}
+
 /** Responsive padding tiers: compact (phones), medium (tablets), desktop. */
 function resolveLayoutPadding(viewportWidth: number): {
   topPadding: number;

@@ -1,26 +1,41 @@
 /**
- * Central render scheduler — ensures the active page and nearby pages render
- * before pages further away, regardless of DOM order. Provides `waitForIdle()`
- * so prefetch work can be deferred until priority renders complete.
+ * Central render scheduler — ensures the most-visible page renders first,
+ * then falls back to active-page proximity so nearby work still wins over
+ * off-screen pages. Jobs are drained in a microtask so all page shells in the
+ * current render pass can enqueue before priority is chosen.
  */
+
+export type RenderPriority = {
+  pageIndex: number;
+  activeIndex: number;
+  visibleRatio: number;
+  visiblePixels: number;
+};
 
 type RenderJob = {
   pageIndex: number;
-  priority: number; // lower = higher priority
+  activeDistance: number;
+  visibleRatio: number;
+  visiblePixels: number;
   run: () => Promise<void>;
   cancel: () => void;
 };
 
 const pendingJobs = new Map<string, RenderJob>();
 let running = false;
+let drainScheduled = false;
 let idleResolvers: (() => void)[] = [];
 
-export function scheduleRender(key: string, pageIndex: number, activeIndex: number, run: () => Promise<void>, cancel: () => void): void {
-  const priority = Math.abs(pageIndex - activeIndex);
-  pendingJobs.set(key, { pageIndex, priority, run, cancel });
-  if (!running) {
-    void drainJobs();
-  }
+export function scheduleRender(key: string, priority: RenderPriority, run: () => Promise<void>, cancel: () => void): void {
+  pendingJobs.set(key, {
+    pageIndex: priority.pageIndex,
+    activeDistance: Math.abs(priority.pageIndex - priority.activeIndex),
+    visibleRatio: priority.visibleRatio,
+    visiblePixels: priority.visiblePixels,
+    run,
+    cancel
+  });
+  requestDrain();
 }
 
 export function cancelRender(key: string): void {
@@ -36,6 +51,7 @@ export function clearScheduler(): void {
     job.cancel();
   }
   pendingJobs.clear();
+  drainScheduled = false;
 }
 
 /**
@@ -55,18 +71,45 @@ export function waitForIdle(): Promise<void> {
 
 /** Whether the scheduler is currently processing render jobs. */
 export function isSchedulerBusy(): boolean {
-  return running || pendingJobs.size > 0;
+  return running || drainScheduled || pendingJobs.size > 0;
+}
+
+function compareRenderJobs(left: RenderJob, right: RenderJob): number {
+  if (left.visibleRatio !== right.visibleRatio) {
+    return right.visibleRatio - left.visibleRatio;
+  }
+  if (left.visiblePixels !== right.visiblePixels) {
+    return right.visiblePixels - left.visiblePixels;
+  }
+  if (left.activeDistance !== right.activeDistance) {
+    return left.activeDistance - right.activeDistance;
+  }
+  return left.pageIndex - right.pageIndex;
+}
+
+function requestDrain(): void {
+  if (running || drainScheduled) {
+    return;
+  }
+
+  drainScheduled = true;
+  queueMicrotask(() => {
+    drainScheduled = false;
+    if (!running && pendingJobs.size > 0) {
+      void drainJobs();
+    }
+  });
 }
 
 async function drainJobs(): Promise<void> {
   running = true;
   while (pendingJobs.size > 0) {
-    // Pick highest priority job (lowest priority number)
+    // Pick the most-visible job first, then fall back to active-page distance.
     let bestKey: string | null = null;
-    let bestPriority = Infinity;
+    let bestJob: RenderJob | null = null;
     for (const [key, job] of pendingJobs) {
-      if (job.priority < bestPriority) {
-        bestPriority = job.priority;
+      if (!bestJob || compareRenderJobs(job, bestJob) < 0) {
+        bestJob = job;
         bestKey = key;
       }
     }

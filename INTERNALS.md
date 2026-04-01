@@ -119,8 +119,8 @@ Each visible page is rendered by a `PageShell` component. When a page enters the
 │     Canvas overlays the preview with a CSS transition.          │
 │     Preview fades out once the canvas is ready.                 │
 │                                                                 │
-│  4. EAGER OFF-SCREEN SEGMENTS                                   │
-│     After visible segments render, remaining segments           │
+│  4. EAGER OFF-SCREEN SLICES                                     │
+│     After visible slices render, remaining slices               │
 │     render in the background (see PDF Rendering Strategy).      │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -142,48 +142,50 @@ The full PDF streaming approach is only used on fast connections where bandwidth
 
 **Files:** `client/src/lib/pdf.ts`, `client/src/lib/components/PageShell.svelte`
 
-### Segment-Based Rendering
+### Slice-Based Rendering
 
-Pages are divided into three vertical segments: `top`, `middle`, and `bottom`. Only the segments currently visible in the viewport are rendered first. This means:
+On fast and medium connections, pages are divided into vertical device-pixel slices rather than one full-page canvas. Only the slices currently visible in the viewport are rendered first. This means:
 
-- If the user is looking at the top of a tall page, only the `top` segment renders initially
+- If the user is looking at the bottom of a tall page, the bottom-most visible slice can render first
 - The page becomes interactive faster because less data needs to be fetched and rendered
-- Remaining segments render eagerly in the background after visible segments complete
+- Remaining off-screen slices render eagerly in the background after visible slices complete
 
 ```
 ┌──────────────────────┐
-│                      │  ◄── top segment
+│                      │  ◄── slice 0
 │                      │
 ├──────────────────────┤
-│                      │  ◄── middle segment
+│                      │  ◄── slice 1
 │                      │
 ├──────────────────────┤
-│                      │  ◄── bottom segment
+│                      │  ◄── slice 2
+│                      │
+├──────────────────────┤
+│                      │  ◄── slice n
 │                      │
 └──────────────────────┘
 ```
 
-### Segment Render Order
+### Slice Render Order
 
-Visible segments render first, ordered by how much of each segment overlaps the viewport. If two segments have the same overlap, the one whose center is closer to the viewport center wins; exact ties keep natural top-to-bottom order.
+Visible slices render first, ordered by how much of each slice overlaps the viewport. If two slices have the same overlap, the one whose center is closer to the viewport center wins; exact ties keep natural top-to-bottom order.
 
-Then remaining off-screen segments render ordered by proximity to the visible area:
+Then remaining off-screen slices render ordered by proximity to the visible area:
 
-- If `top` is visible → renders `middle` then `bottom`
-- If `bottom` is visible → renders `middle` then `top`
-- If `middle` is visible → renders `top` then `bottom`
+- If the viewport is near the bottom of the page, the next slice above it renders before slices further away
+- If the viewport is centered mid-page, the nearest neighboring slices render before distant ones
 
-This means the most visible part of the page renders first, and the segment the user is most likely to scroll into next renders before the one further away.
+This means the most visible part of the page renders first, and the slice the user is most likely to scroll into next renders before the one further away.
 
-### Segment Geometry Source of Truth
+### Slice Geometry Source of Truth
 
-The segment boundaries are computed once in `client/src/lib/pdf.ts` using the same device-pixel-aware split math that the rasterizer uses. `PageShell.svelte` then reuses those exact bounds for:
+The slice boundaries are computed once in `client/src/lib/pdf.ts` using the same device-pixel-aware split math that the rasterizer uses. `PageShell.svelte` then reuses those exact bounds for:
 
 - DOM slot placement
-- visible-segment detection
-- segment canvas sizing
+- visible-slice detection
+- slice canvas sizing
 
-This matters because independent CSS thirds such as `33.333%` do not always match integer device-pixel splits. On compact/mobile layouts that mismatch can surface as thin horizontal seams, clipped bottoms, or startup stretch while stale geometry settles.
+This matters because independent CSS percentages do not always match integer device-pixel slice boundaries. On compact/mobile layouts that mismatch can surface as thin horizontal seams, clipped bottoms, or startup stretch while stale geometry settles.
 
 ### Render Invalidation
 

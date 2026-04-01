@@ -11,6 +11,7 @@
     LineStyle,
     NotebookTemplate,
     PageAnnotation,
+    PagePoint,
     SaveMode,
     SearchResponse,
     ShapeKind,
@@ -29,6 +30,7 @@
     searchDocument,
     updateBookmark
   } from '../api';
+  import { placeAnnotationsAcrossPages } from '../annotationTransfer';
   import { annotationTextFromAnnotations } from '../annotations';
   import ChapterManager from './ChapterManager.svelte';
   import { debugTimeline } from '../debug';
@@ -48,6 +50,7 @@
   import PageShell from './PageShell.svelte';
   import ThumbnailPreview from './ThumbnailPreview.svelte';
   import { ReaderLayoutEngine, type PageShellLayout, type ReaderLayoutResult, type VisibleWindow } from '../reader/layout';
+  import { selectionBoundsRegionFromAnnotations, type SelectionRegion } from '../selectionRegion';
   import {
     STROKE_BOUNDS,
     cloneStrokePresetSettings,
@@ -88,7 +91,9 @@
     clientRevision: number;
     localChangeCounter: number;
     undoStack: Annotation[][];
+    undoTransactionIds: string[];
     redoStack: Annotation[][];
+    redoTransactionIds: string[];
   }
 
   interface SaveItem {
@@ -188,6 +193,7 @@
   /** Tape IDs that were already persistently revealed before a peek started — restored on peek-end */
   let prePeekRevealedIds: Set<string> = new Set();
   let selectedAnnotationIdsByPage: Record<string, string[]> = {};
+  let selectionRegionByPage: Record<string, SelectionRegion | null> = {};
   let rulerVisible = false;
   let rulerOffsetY = 180;
   let rulerAngle = 0;
@@ -238,6 +244,7 @@
   let scrolling = false;
   let lastScrollY = 0;
   let lastScrollTime = 0;
+  let scrollDirection: 'up' | 'down' | 'idle' = 'idle';
   let touchGestureActive = false;
   let touchMomentumActive = false;
   let inkScrollLocked = false;
@@ -329,7 +336,9 @@
       clientRevision: 0,
       localChangeCounter: 0,
       undoStack: [],
-      redoStack: []
+      undoTransactionIds: [],
+      redoStack: [],
+      redoTransactionIds: []
     };
   }
 
@@ -338,7 +347,9 @@
       ...defaultPageState(),
       ...state,
       undoStack: state?.undoStack ?? [],
-      redoStack: state?.redoStack ?? []
+      undoTransactionIds: state?.undoTransactionIds ?? [],
+      redoStack: state?.redoStack ?? [],
+      redoTransactionIds: state?.redoTransactionIds ?? []
     };
   }
 
@@ -377,6 +388,10 @@
     }
 
     return bundle.pages.find((page) => page.id === pageId) ?? null;
+  }
+
+  function pageLayoutById(pageId: string): PageShellLayout | null {
+    return layout.pages.find((pageLayout) => pageLayout.page.id === pageId) ?? null;
   }
 
   function historyTargetPage() {
@@ -660,10 +675,14 @@
 
   // ── Lasso Selection ───────────────────────────────────────────────────
 
-  function handleSelectionChange(pageId: string, annotationIds: string[]): void {
+  function handleSelectionChange(pageId: string, annotationIds: string[], region: SelectionRegion | null): void {
     selectedAnnotationIdsByPage = {
       ...selectedAnnotationIdsByPage,
       [pageId]: annotationIds
+    };
+    selectionRegionByPage = {
+      ...selectionRegionByPage,
+      [pageId]: annotationIds.length > 0 ? region : null
     };
 
     const current = currentPage();
@@ -741,7 +760,7 @@
       return;
     }
 
-    handleSelectionChange(current.id, []);
+    handleSelectionChange(current.id, [], null);
   }
 
   async function deleteLassoSelection(): Promise<void> {
@@ -760,7 +779,7 @@
       current.id,
       state.annotations.filter((annotation) => !selectedIds.includes(annotation.id))
     );
-    handleSelectionChange(current.id, []);
+    handleSelectionChange(current.id, [], null);
   }
 
   // ── Stroke Popover & Preset Management ─────────────────────────────────
@@ -963,6 +982,25 @@
     return next.length > MAX_PAGE_HISTORY ? next.slice(next.length - MAX_PAGE_HISTORY) : next;
   }
 
+  function nextHistoryTransactionStack(stack: string[], transactionId: string): string[] {
+    const next = [...stack, transactionId];
+    return next.length > MAX_PAGE_HISTORY ? next.slice(next.length - MAX_PAGE_HISTORY) : next;
+  }
+
+  function transactionPageIds(pageId: string, transactionId: string, direction: 'undo' | 'redo'): string[] {
+    if (!transactionId) {
+      return [pageId];
+    }
+
+    return Object.entries(pageStates)
+      .filter(([, state]) => {
+        const stack = direction === 'undo' ? state.undoTransactionIds : state.redoTransactionIds;
+        return stack[stack.length - 1] === transactionId;
+      })
+      .map(([id]) => id)
+      .sort((left, right) => pageIndexForId(left) - pageIndexForId(right));
+  }
+
   async function undoCurrentPage(): Promise<void> {
     const page = historyTargetPage();
     if (!page) {
@@ -974,25 +1012,38 @@
       return;
     }
 
-    const previousAnnotations = state.undoStack[state.undoStack.length - 1];
-    const nextState: PageRuntimeState = {
-      ...state,
-      annotations: previousAnnotations,
-      annotationText: annotationTextFromAnnotations(previousAnnotations),
-      dirty: true,
-      saveError: '',
-      localChangeCounter: state.localChangeCounter + 1,
-      undoStack: state.undoStack.slice(0, -1),
-      redoStack: nextHistoryStack(state.redoStack, state.annotations)
-    };
-    setPageState(page.id, nextState);
+    const transactionId = state.undoTransactionIds[state.undoTransactionIds.length - 1] ?? '';
+    const pageIds = transactionPageIds(page.id, transactionId, 'undo');
+
+    for (const affectedPageId of pageIds) {
+      const affectedState = ensurePageState(affectedPageId);
+      const previousAnnotations = affectedState.undoStack[affectedState.undoStack.length - 1];
+      if (!previousAnnotations) {
+        continue;
+      }
+
+      const nextState: PageRuntimeState = {
+        ...affectedState,
+        annotations: previousAnnotations,
+        annotationText: annotationTextFromAnnotations(previousAnnotations),
+        dirty: true,
+        saveError: '',
+        localChangeCounter: affectedState.localChangeCounter + 1,
+        undoStack: affectedState.undoStack.slice(0, -1),
+        undoTransactionIds: affectedState.undoTransactionIds.slice(0, -1),
+        redoStack: nextHistoryStack(affectedState.redoStack, affectedState.annotations),
+        redoTransactionIds: nextHistoryTransactionStack(affectedState.redoTransactionIds, transactionId)
+      };
+      setPageState(affectedPageId, nextState);
+      await queueSave(affectedPageId, {
+        mode: 'replace',
+        annotations: previousAnnotations,
+        annotationText: nextState.annotationText
+      });
+    }
+
     focusEditedPage(page.id);
     lastEditedPageId = page.id;
-    await queueSave(page.id, {
-      mode: 'replace',
-      annotations: previousAnnotations,
-      annotationText: nextState.annotationText
-    });
   }
 
   async function redoCurrentPage(): Promise<void> {
@@ -1006,25 +1057,38 @@
       return;
     }
 
-    const nextAnnotations = state.redoStack[state.redoStack.length - 1];
-    const nextState: PageRuntimeState = {
-      ...state,
-      annotations: nextAnnotations,
-      annotationText: annotationTextFromAnnotations(nextAnnotations),
-      dirty: true,
-      saveError: '',
-      localChangeCounter: state.localChangeCounter + 1,
-      undoStack: nextHistoryStack(state.undoStack, state.annotations),
-      redoStack: state.redoStack.slice(0, -1)
-    };
-    setPageState(page.id, nextState);
+    const transactionId = state.redoTransactionIds[state.redoTransactionIds.length - 1] ?? '';
+    const pageIds = transactionPageIds(page.id, transactionId, 'redo');
+
+    for (const affectedPageId of pageIds) {
+      const affectedState = ensurePageState(affectedPageId);
+      const nextAnnotations = affectedState.redoStack[affectedState.redoStack.length - 1];
+      if (!nextAnnotations) {
+        continue;
+      }
+
+      const nextState: PageRuntimeState = {
+        ...affectedState,
+        annotations: nextAnnotations,
+        annotationText: annotationTextFromAnnotations(nextAnnotations),
+        dirty: true,
+        saveError: '',
+        localChangeCounter: affectedState.localChangeCounter + 1,
+        undoStack: nextHistoryStack(affectedState.undoStack, affectedState.annotations),
+        undoTransactionIds: nextHistoryTransactionStack(affectedState.undoTransactionIds, transactionId),
+        redoStack: affectedState.redoStack.slice(0, -1),
+        redoTransactionIds: affectedState.redoTransactionIds.slice(0, -1)
+      };
+      setPageState(affectedPageId, nextState);
+      await queueSave(affectedPageId, {
+        mode: 'replace',
+        annotations: nextAnnotations,
+        annotationText: nextState.annotationText
+      });
+    }
+
     focusEditedPage(page.id);
     lastEditedPageId = page.id;
-    await queueSave(page.id, {
-      mode: 'replace',
-      annotations: nextAnnotations,
-      annotationText: nextState.annotationText
-    });
   }
 
   async function clearCurrentPageAnnotations(): Promise<void> {
@@ -1121,6 +1185,10 @@
   }
 
   function handlePreviewAnnotationsChange(pageId: string, annotations: PageAnnotation[] | null): void {
+    if ((previewAnnotationsByPage[pageId] ?? null) === annotations) {
+      return;
+    }
+
     previewAnnotationsByPage = {
       ...previewAnnotationsByPage,
       [pageId]: annotations
@@ -1369,7 +1437,9 @@
         clientRevision: 0,
         localChangeCounter: 0,
         undoStack: [],
-        redoStack: []
+        undoTransactionIds: [],
+        redoStack: [],
+        redoTransactionIds: []
       };
 
       if (
@@ -1558,7 +1628,9 @@
       saveError: '',
       localChangeCounter: state.localChangeCounter + 1,
       undoStack: nextHistoryStack(state.undoStack, state.annotations),
-      redoStack: []
+      undoTransactionIds: nextHistoryTransactionStack(state.undoTransactionIds, ''),
+      redoStack: [],
+      redoTransactionIds: []
     };
     setPageState(pageId, nextState);
     focusEditedPage(pageId);
@@ -1570,7 +1642,7 @@
     });
   }
 
-  async function replaceAnnotations(pageId: string, annotations: Annotation[]): Promise<void> {
+  function applyLocalAnnotationReplace(pageId: string, annotations: Annotation[], options: { focus?: boolean; transactionId?: string } = {}): PageRuntimeState {
     const state = ensurePageState(pageId);
     const nextState: PageRuntimeState = {
       ...state,
@@ -1580,16 +1652,126 @@
       saveError: '',
       localChangeCounter: state.localChangeCounter + 1,
       undoStack: nextHistoryStack(state.undoStack, state.annotations),
-      redoStack: []
+      undoTransactionIds: nextHistoryTransactionStack(state.undoTransactionIds, options.transactionId ?? ''),
+      redoStack: [],
+      redoTransactionIds: []
     };
     setPageState(pageId, nextState);
-    focusEditedPage(pageId);
+    if (options.focus !== false) {
+      focusEditedPage(pageId);
+    }
     lastEditedPageId = pageId;
+    return nextState;
+  }
+
+  async function replaceAnnotations(pageId: string, annotations: Annotation[]): Promise<void> {
+    const nextState = applyLocalAnnotationReplace(pageId, annotations);
     await queueSave(pageId, {
       mode: 'replace',
       annotations,
       annotationText: nextState.annotationText
     });
+  }
+
+  async function moveSelectedAnnotations(pageId: string, annotationIds: string[], previewAnnotations: PageAnnotation[], dropPoint: PagePoint): Promise<void> {
+    if (!bundle || annotationIds.length === 0) {
+      return;
+    }
+
+    const sourceLayout = pageLayoutById(pageId);
+    if (!sourceLayout) {
+      await replaceAnnotations(pageId, previewAnnotations as Annotation[]);
+      return;
+    }
+
+    const selectedIds = new Set(annotationIds);
+    const transactionId = createClientId();
+    const movedSelection = previewAnnotations.filter((annotation) => selectedIds.has(annotation.id));
+    if (movedSelection.length === 0) {
+      await replaceAnnotations(pageId, previewAnnotations as Annotation[]);
+      return;
+    }
+
+    const initialPlacements = placeAnnotationsAcrossPages({
+      annotations: movedSelection,
+      sourceLayout,
+      pageLayouts: layout.pages,
+      targetPoint: {
+        x: sourceLayout.left + dropPoint.x * sourceLayout.scale,
+        y: sourceLayout.top + dropPoint.y * sourceLayout.scale,
+        pressure: dropPoint.pressure,
+        time: dropPoint.time
+      }
+    });
+    const movedById = new Map(movedSelection.map((annotation) => [annotation.id, annotation]));
+    const targetPageIds = [...new Set(initialPlacements.map((placement) => placement.pageId).filter((targetPageId) => targetPageId !== pageId))];
+
+    for (const targetPageId of targetPageIds) {
+      const targetState = ensurePageState(targetPageId);
+      if (!targetState.loaded && !targetState.loading) {
+        await loadPageState(targetPageId);
+      }
+    }
+
+    const placements = initialPlacements.map((placement) => {
+      const targetState = ensurePageState(placement.pageId);
+      if (placement.pageId === pageId || targetState.loaded) {
+        return placement;
+      }
+
+      return {
+        pageId,
+        annotation: movedById.get(placement.annotation.id) ?? placement.annotation
+      };
+    });
+
+    const placementsByPage = new Map<string, PageAnnotation[]>();
+    for (const placement of placements) {
+      const queue = placementsByPage.get(placement.pageId) ?? [];
+      queue.push(placement.annotation);
+      placementsByPage.set(placement.pageId, queue);
+    }
+
+    const sourceSelectedIds = new Set((placementsByPage.get(pageId) ?? []).map((annotation) => annotation.id));
+    const sourceNextAnnotations = previewAnnotations.filter(
+      (annotation) => !selectedIds.has(annotation.id) || sourceSelectedIds.has(annotation.id)
+    );
+
+    const updates = new Map<string, PageAnnotation[]>();
+    updates.set(pageId, sourceNextAnnotations);
+
+    for (const [targetPageId, movedAnnotations] of placementsByPage) {
+      if (targetPageId === pageId) {
+        continue;
+      }
+
+      const targetState = ensurePageState(targetPageId);
+      const currentAnnotations = (targetState.annotations as PageAnnotation[]).filter((annotation) => !selectedIds.has(annotation.id));
+      updates.set(targetPageId, [...currentAnnotations, ...movedAnnotations]);
+    }
+
+    const nextSelection = { ...selectedAnnotationIdsByPage };
+    const nextSelectionRegions = { ...selectionRegionByPage };
+    nextSelection[pageId] = (placementsByPage.get(pageId) ?? []).map((annotation) => annotation.id);
+    nextSelectionRegions[pageId] = selectionBoundsRegionFromAnnotations(placementsByPage.get(pageId) ?? []);
+    for (const [targetPageId, movedAnnotations] of placementsByPage) {
+      if (targetPageId === pageId) {
+        continue;
+      }
+      nextSelection[targetPageId] = movedAnnotations.map((annotation) => annotation.id);
+      nextSelectionRegions[targetPageId] = selectionBoundsRegionFromAnnotations(movedAnnotations);
+    }
+    selectedAnnotationIdsByPage = nextSelection;
+    selectionRegionByPage = nextSelectionRegions;
+
+    for (const [targetPageId, nextAnnotations] of updates) {
+      const nextState = applyLocalAnnotationReplace(targetPageId, nextAnnotations as Annotation[], { focus: false, transactionId });
+      void queueSave(targetPageId, {
+        mode: 'replace',
+        annotations: nextAnnotations as Annotation[],
+        annotationText: nextState.annotationText
+      });
+    }
   }
 
   // ── Layout & Visibility ───────────────────────────────────────────────
@@ -1655,6 +1837,8 @@
       connectSync(nextBundle.document.id);
       searchState = { indexing: false, results: [] };
       pageStates = Object.fromEntries(nextBundle.pages.map((page) => [page.id, normalizePageState(pageStates[page.id])]));
+      selectedAnnotationIdsByPage = {};
+      selectionRegionByPage = {};
       if (!nextBundle.pages.some((page) => page.id === lastEditedPageId)) {
         lastEditedPageId = null;
       }
@@ -1698,11 +1882,15 @@
           normalizePageState({
             ...current,
             undoStack: [],
-            redoStack: []
+            undoTransactionIds: [],
+            redoStack: [],
+            redoTransactionIds: []
           })
         ];
       })
     );
+    selectedAnnotationIdsByPage = {};
+    selectionRegionByPage = {};
     if (!nextBundle.pages.some((page) => page.id === lastEditedPageId)) {
       lastEditedPageId = null;
     }
@@ -1795,7 +1983,13 @@
       closeStrokePopover();
     }
 
-    const velocity = Math.abs((scrollPane.scrollTop - lastScrollY) / (Date.now() - lastScrollTime || 1));
+    const scrollDelta = scrollPane.scrollTop - lastScrollY;
+    const velocity = Math.abs(scrollDelta / (Date.now() - lastScrollTime || 1));
+    if (scrollDelta > 0) {
+      scrollDirection = 'down';
+    } else if (scrollDelta < 0) {
+      scrollDirection = 'up';
+    }
     lastScrollY = scrollPane.scrollTop;
     lastScrollTime = Date.now();
 
@@ -2902,11 +3096,13 @@
                 tapeOpacity={tapeOpacity}
                 revealedTapeIds={revealedTapeIds}
                 selectedAnnotationIds={selectedAnnotationIdsByPage[pageLayout.page.id] ?? []}
+                selectionRegion={selectionRegionByPage[pageLayout.page.id] ?? null}
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
                 shapeLineStyle={selectedShapeLineStyle}
                 onPenSessionChange={setInkScrollLock}
                 onAppend={appendAnnotations}
+                onMoveSelection={moveSelectedAnnotations}
                 onReplace={replaceAnnotations}
                 onSelectionChange={handleSelectionChange}
                 onTapePeek={handleTapePeek}
@@ -2914,6 +3110,7 @@
                 onToolGestureStart={() => { activeToolPanel = null; }}
                 viewportTop={scrollPane?.scrollTop ?? 0}
                 viewportHeight={scrollPane?.clientHeight ?? 0}
+                scrollDirection={scrollDirection}
               />
             {/each}
           </div>
