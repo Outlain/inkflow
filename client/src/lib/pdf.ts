@@ -279,6 +279,34 @@ function segmentBounds(targetHeight: number, segment: PdfRenderSegment): { top: 
 }
 
 /**
+ * Return CSS-space bounds for a page segment using the same device-scale-aware
+ * split math as the PDF renderer. This keeps DOM slot geometry aligned with
+ * bitmap segment boundaries and avoids fractional seam gaps on mobile.
+ */
+export function getPdfSegmentCssBounds(params: {
+  pageHeight: number;
+  pageScale: number;
+  devicePixelRatio: number;
+  coarsePointer: boolean;
+  viewportWidth: number;
+  segment: Exclude<PdfRenderSegment, 'full'>;
+}): { top: number; height: number } {
+  const { pageHeight, pageScale, devicePixelRatio, coarsePointer, viewportWidth, segment } = params;
+  const deviceScale = resolvePdfDeviceScale({
+    devicePixelRatio,
+    pageScale,
+    coarsePointer,
+    viewportWidth
+  });
+  const targetHeight = Math.max(1, Math.floor(pageHeight * pageScale * deviceScale));
+  const { top, height } = segmentBounds(targetHeight, segment);
+  return {
+    top: top / deviceScale,
+    height: height / deviceScale
+  };
+}
+
+/**
  * Render a PDF page (or a vertical segment of one) onto the given canvas.
  * Returns a cached surface when available; otherwise renders into an
  * offscreen surface, caches it, then composites onto the visible canvas.

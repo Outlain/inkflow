@@ -21,7 +21,7 @@
   } from '@shared/contracts';
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
-  import { cancelCanvasRender, renderPdfPage, measurePreviewLoad, type PdfRenderSegment } from '../pdf';
+  import { cancelCanvasRender, getPdfSegmentCssBounds, renderPdfPage, measurePreviewLoad, type PdfRenderSegment } from '../pdf';
   import { scheduleRender } from '../renderScheduler';
   import type { ConnectionQuality, NetworkConfig } from '../networkMonitor';
   import type { PageShellLayout } from '../reader/layout';
@@ -528,15 +528,19 @@
   }
 
   function segmentCanvasStyle(segment: Exclude<PdfRenderSegment, 'full'>): string {
-    if (segment === 'top') {
-      return 'top:0; height:calc(100% / 3);';
-    }
+    const devicePixelRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const coarsePointer = typeof window !== 'undefined' ? (window.matchMedia?.('(pointer: coarse)')?.matches ?? false) : false;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth || 1440 : 1440;
+    const bounds = getPdfSegmentCssBounds({
+      pageHeight: layout.page.height,
+      pageScale: layout.scale,
+      devicePixelRatio,
+      coarsePointer,
+      viewportWidth,
+      segment
+    });
 
-    if (segment === 'middle') {
-      return 'top:calc(100% / 3); height:calc(100% / 3);';
-    }
-
-    return 'top:calc((100% / 3) * 2); height:calc(100% - ((100% / 3) * 2));';
+    return `top:${bounds.top}px; height:${bounds.height}px;`;
   }
 
   function fullCanvasStyle(): string {
