@@ -147,6 +147,7 @@
   const DEFAULT_MARKER_COLOR = colorChips[4];
   const QUICK_PENCIL_STABILIZATION = 18;
   const QUICK_MARKER_STABILIZATION = 24;
+  const REPLACE_SAVE_DEBOUNCE_MS = 120;
   const textSizePresets = [18, 24, 32] as const;
   const middleMenuItems = [
     { id: 'lasso' as const, label: 'Lasso', glyph: '⬚', accent: '#8db5d8' },
@@ -237,6 +238,7 @@
   // Save queue: batches pending server writes per page
   const pendingSaves = new Map<string, SaveItem[]>();
   const drainingPages = new Set<string>();
+  const saveDrainTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Scroll & gesture tracking
   let scrollFrame = 0;
@@ -1001,7 +1003,7 @@
       .sort((left, right) => pageIndexForId(left) - pageIndexForId(right));
   }
 
-  async function undoCurrentPage(): Promise<void> {
+  function undoCurrentPage(): void {
     const page = historyTargetPage();
     if (!page) {
       return;
@@ -1035,7 +1037,7 @@
         redoTransactionIds: nextHistoryTransactionStack(affectedState.redoTransactionIds, transactionId)
       };
       setPageState(affectedPageId, nextState);
-      await queueSave(affectedPageId, {
+      queueSave(affectedPageId, {
         mode: 'replace',
         annotations: previousAnnotations,
         annotationText: nextState.annotationText
@@ -1046,7 +1048,7 @@
     lastEditedPageId = page.id;
   }
 
-  async function redoCurrentPage(): Promise<void> {
+  function redoCurrentPage(): void {
     const page = historyTargetPage();
     if (!page) {
       return;
@@ -1080,7 +1082,7 @@
         redoTransactionIds: affectedState.redoTransactionIds.slice(0, -1)
       };
       setPageState(affectedPageId, nextState);
-      await queueSave(affectedPageId, {
+      queueSave(affectedPageId, {
         mode: 'replace',
         annotations: nextAnnotations,
         annotationText: nextState.annotationText
@@ -1089,6 +1091,40 @@
 
     focusEditedPage(page.id);
     lastEditedPageId = page.id;
+  }
+
+  function handleUndoPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || !canUndoAvailable) {
+      return;
+    }
+
+    event.preventDefault();
+    undoCurrentPage();
+  }
+
+  function handleRedoPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || !canRedoAvailable) {
+      return;
+    }
+
+    event.preventDefault();
+    redoCurrentPage();
+  }
+
+  function handleUndoClick(event: MouseEvent): void {
+    if (event.detail !== 0 || !canUndoAvailable) {
+      return;
+    }
+
+    undoCurrentPage();
+  }
+
+  function handleRedoClick(event: MouseEvent): void {
+    if (event.detail !== 0 || !canRedoAvailable) {
+      return;
+    }
+
+    redoCurrentPage();
   }
 
   async function clearCurrentPageAnnotations(): Promise<void> {
@@ -1536,6 +1572,12 @@
       return;
     }
 
+    const pendingTimer = saveDrainTimers.get(pageId);
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      saveDrainTimers.delete(pageId);
+    }
+
     drainingPages.add(pageId);
 
     try {
@@ -1601,17 +1643,37 @@
     }
   }
 
-  async function queueSave(pageId: string, item: SaveItem): Promise<void> {
+  function scheduleSaveDrain(pageId: string, delayMs: number): void {
+    const pendingTimer = saveDrainTimers.get(pageId);
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      saveDrainTimers.delete(pageId);
+    }
+
+    if (delayMs <= 0) {
+      void drainSaves(pageId);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      saveDrainTimers.delete(pageId);
+      void drainSaves(pageId);
+    }, delayMs);
+    saveDrainTimers.set(pageId, timer);
+  }
+
+  function queueSave(pageId: string, item: SaveItem): void {
     const queue = pendingSaves.get(pageId) ?? [];
     if (item.mode === 'replace') {
       pendingSaves.set(pageId, [item]);
+      scheduleSaveDrain(pageId, REPLACE_SAVE_DEBOUNCE_MS);
     } else {
       queue.push(item);
       pendingSaves.set(pageId, queue);
+      scheduleSaveDrain(pageId, 0);
     }
 
     void persistDraft(pageId);
-    void drainSaves(pageId);
   }
 
   // ── Annotation Mutation (called by PageShell) ──────────────────────────
@@ -1635,7 +1697,7 @@
     setPageState(pageId, nextState);
     focusEditedPage(pageId);
     lastEditedPageId = pageId;
-    await queueSave(pageId, {
+    queueSave(pageId, {
       mode: 'append',
       annotations: appended,
       annotationText: nextState.annotationText
@@ -1666,7 +1728,7 @@
 
   async function replaceAnnotations(pageId: string, annotations: Annotation[]): Promise<void> {
     const nextState = applyLocalAnnotationReplace(pageId, annotations);
-    await queueSave(pageId, {
+    queueSave(pageId, {
       mode: 'replace',
       annotations,
       annotationText: nextState.annotationText
@@ -2344,6 +2406,10 @@
     cancelAnimationFrame(pinchFrame);
     window.clearTimeout(scrollEndTimer);
     window.clearInterval(timeKeeperTimer);
+    for (const timer of saveDrainTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    saveDrainTimers.clear();
     cancelLongPress();
     syncSocket?.close();
     stopBackgroundDownload();
@@ -2805,8 +2871,8 @@
               ⋯
             </button>
             <div class="middle-menu-divider"></div>
-            <button class="middle-menu-utility" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:click={undoCurrentPage}>↺</button>
-            <button class="middle-menu-utility" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:click={redoCurrentPage}>↻</button>
+            <button class="middle-menu-utility" type="button" aria-label="Undo" disabled={!canUndoAvailable} on:pointerdown={handleUndoPointerDown} on:click={handleUndoClick}>↺</button>
+            <button class="middle-menu-utility" type="button" aria-label="Redo" disabled={!canRedoAvailable} on:pointerdown={handleRedoPointerDown} on:click={handleRedoClick}>↻</button>
             {#if compactMode}
               <button class:active={compactHeaderVisibleState} class="middle-menu-utility" type="button" aria-label={compactHeaderVisibleState ? 'Hide top menu' : 'Show top menu'} on:click={toggleCompactHeader}>{compactHeaderVisibleState ? '▴' : '▾'}</button>
             {/if}
