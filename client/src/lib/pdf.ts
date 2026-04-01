@@ -7,7 +7,7 @@
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { FileRecord, PageRecord } from '@shared/contracts';
-import { getNetworkConfig, getConnectionQuality, recordThroughput } from './networkMonitor';
+import { getNetworkConfig, getConnectionQuality, recordThroughput, type ConnectionQuality } from './networkMonitor';
 import { getPublicRuntimeConfig } from './runtimeConfig';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -35,6 +35,19 @@ function integerOrFallback(value: unknown, fallback: number): number {
 }
 
 export type PdfRenderSegment = 'full' | 'top' | 'middle' | 'bottom';
+export type PdfSegmentSlice = Exclude<PdfRenderSegment, 'full'>;
+export type PdfRenderStrategy = 'segmented' | 'full';
+export type PdfRenderEnvironment = {
+  devicePixelRatio: number;
+  coarsePointer: boolean;
+  viewportWidth: number;
+};
+export type PdfSegmentCssBounds = {
+  top: number;
+  height: number;
+  bottom: number;
+};
+export type PdfSegmentCssLayout = Record<PdfSegmentSlice, PdfSegmentCssBounds>;
 
 // ---------------------------------------------------------------------------
 // Document loading
@@ -139,7 +152,7 @@ export function resolvePdfDeviceScale(options: {
   return Math.min(safeRatio, 2);
 }
 
-function currentEnvironment(): { devicePixelRatio: number; coarsePointer: boolean; viewportWidth: number } {
+export function getPdfRenderEnvironment(): PdfRenderEnvironment {
   if (typeof window === 'undefined') {
     return {
       devicePixelRatio: 1,
@@ -278,32 +291,130 @@ function segmentBounds(targetHeight: number, segment: PdfRenderSegment): { top: 
   return { top: third * 2, height: Math.max(1, targetHeight - third * 2) };
 }
 
+export function getPdfRenderStrategy(connectionQuality: ConnectionQuality): PdfRenderStrategy {
+  return connectionQuality === 'slow' ? 'full' : 'segmented';
+}
+
+export function buildPdfRenderStateKey(params: {
+  pageScale: number;
+  pageWidth: number;
+  pageHeight: number;
+  connectionQuality: ConnectionQuality;
+}): string {
+  const { pageScale, pageWidth, pageHeight, connectionQuality } = params;
+  return `${pageScale.toFixed(4)}:${pageWidth.toFixed(4)}:${pageHeight.toFixed(4)}:${connectionQuality}:${getPdfRenderStrategy(connectionQuality)}`;
+}
+
 /**
  * Return CSS-space bounds for a page segment using the same device-scale-aware
  * split math as the PDF renderer. This keeps DOM slot geometry aligned with
  * bitmap segment boundaries and avoids fractional seam gaps on mobile.
  */
-export function getPdfSegmentCssBounds(params: {
+export function getPdfSegmentCssLayout(params: {
   pageHeight: number;
   pageScale: number;
   devicePixelRatio: number;
   coarsePointer: boolean;
   viewportWidth: number;
-  segment: Exclude<PdfRenderSegment, 'full'>;
-}): { top: number; height: number } {
-  const { pageHeight, pageScale, devicePixelRatio, coarsePointer, viewportWidth, segment } = params;
+}): PdfSegmentCssLayout {
+  const { pageHeight, pageScale, devicePixelRatio, coarsePointer, viewportWidth } = params;
+  const cssPageHeight = pageHeight * pageScale;
   const deviceScale = resolvePdfDeviceScale({
     devicePixelRatio,
     pageScale,
     coarsePointer,
     viewportWidth
   });
-  const targetHeight = Math.max(1, Math.floor(pageHeight * pageScale * deviceScale));
-  const { top, height } = segmentBounds(targetHeight, segment);
+  const targetHeight = Math.max(1, Math.floor(cssPageHeight * deviceScale));
+  const topSegment = segmentBounds(targetHeight, 'top');
+  const middleSegment = segmentBounds(targetHeight, 'middle');
+  const bottomSegment = segmentBounds(targetHeight, 'bottom');
+  const topBoundary = middleSegment.top / deviceScale;
+  const middleBoundary = bottomSegment.top / deviceScale;
+
   return {
-    top: top / deviceScale,
-    height: height / deviceScale
+    top: {
+      top: topSegment.top / deviceScale,
+      height: topBoundary - topSegment.top / deviceScale,
+      bottom: topBoundary
+    },
+    middle: {
+      top: topBoundary,
+      height: middleBoundary - topBoundary,
+      bottom: middleBoundary
+    },
+    bottom: {
+      top: middleBoundary,
+      height: cssPageHeight - middleBoundary,
+      bottom: cssPageHeight
+    }
   };
+}
+
+export function getPdfSegmentCssBounds(params: {
+  pageHeight: number;
+  pageScale: number;
+  devicePixelRatio: number;
+  coarsePointer: boolean;
+  viewportWidth: number;
+  segment: PdfSegmentSlice;
+}): { top: number; height: number } {
+  const layout = getPdfSegmentCssLayout(params);
+  const bounds = layout[params.segment];
+  return {
+    top: bounds.top,
+    height: bounds.height
+  };
+}
+
+export function getVisiblePdfSegments(params: {
+  pageTop: number;
+  pageHeight: number;
+  pageScale: number;
+  viewportTop: number;
+  viewportHeight: number;
+  devicePixelRatio: number;
+  coarsePointer: boolean;
+  viewportWidth: number;
+}): PdfSegmentSlice[] {
+  const { pageTop, pageHeight, pageScale, viewportTop, viewportHeight } = params;
+  const pageBottom = pageTop + pageHeight * pageScale;
+  const visibleTop = Math.max(viewportTop, pageTop) - pageTop;
+  const visibleBottom = Math.min(viewportTop + viewportHeight, pageBottom) - pageTop;
+
+  if (visibleBottom <= 0 || visibleTop >= pageHeight * pageScale) {
+    return ['top'];
+  }
+
+  const segmentLayout = getPdfSegmentCssLayout(params);
+  const viewportCenter = (visibleTop + visibleBottom) / 2;
+  const segments = (['top', 'middle', 'bottom'] as const)
+    .map((segment, index) => {
+      const bounds = segmentLayout[segment];
+      const overlap = Math.max(0, Math.min(visibleBottom, bounds.bottom) - Math.max(visibleTop, bounds.top));
+      const center = (bounds.top + bounds.bottom) / 2;
+      return {
+        segment,
+        index,
+        overlap,
+        centerDistance: Math.abs(center - viewportCenter)
+      };
+    })
+    .filter(({ overlap }) => overlap > 0)
+    .sort((left, right) => {
+      if (right.overlap !== left.overlap) {
+        return right.overlap - left.overlap;
+      }
+
+      if (left.centerDistance !== right.centerDistance) {
+        return left.centerDistance - right.centerDistance;
+      }
+
+      return left.index - right.index;
+    })
+    .map(({ segment }) => segment);
+
+  return segments.length > 0 ? segments : ['top'];
 }
 
 /**
@@ -320,7 +431,7 @@ export async function renderPdfPage(params: {
   segmentCanvas?: boolean;
 }): Promise<void> {
   const { canvas, page, file, scale, segment = 'full', segmentCanvas = false } = params;
-  const { coarsePointer, devicePixelRatio, viewportWidth } = currentEnvironment();
+  const { coarsePointer, devicePixelRatio, viewportWidth } = getPdfRenderEnvironment();
   const deviceScale = resolvePdfDeviceScale({
     devicePixelRatio,
     pageScale: scale,

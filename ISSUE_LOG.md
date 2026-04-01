@@ -4,6 +4,12 @@ Use this log during development to record bugs by root cause, not just symptom.
 
 ## Entries
 
+### 2026-04-01: PDF segment geometry drift caused seams, stretch, and stale paints
+
+- Bug: first-view PDF pages could show horizontal seams, temporary stretch/cropping, or stale partial paints, especially on mobile/compact layouts and during connection-mode changes.
+- Root cause: the PDF renderer, DOM slot layout, and visible-segment scheduler logic were not all using the same segment boundaries. The rasterizer split pages with device-pixel-aware math, while parts of the shell still reasoned in CSS thirds. Page invalidation also relied on a weaker geometry identity, so stale work could survive a resize or a segmented/full-page strategy change.
+- Fix: moved segment layout to a shared helper in [`client/src/lib/pdf.ts`](./client/src/lib/pdf.ts), reused it from [`client/src/lib/components/PageShell.svelte`](./client/src/lib/components/PageShell.svelte) for DOM placement and visible-segment detection, and tightened render invalidation so queued/in-flight work is canceled whenever shell geometry or render strategy changes.
+
 ### 2026-03-20: Multipart folder field typing bug
 
 - Bug: PDF import route assumed multipart fields always exposed `.value` directly.

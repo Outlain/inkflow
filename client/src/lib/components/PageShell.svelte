@@ -21,8 +21,18 @@
   } from '@shared/contracts';
   import { debugTimeline } from '../debug';
   import { createClientId } from '../id';
-  import { cancelCanvasRender, getPdfSegmentCssBounds, renderPdfPage, measurePreviewLoad, type PdfRenderSegment } from '../pdf';
-  import { scheduleRender } from '../renderScheduler';
+  import {
+    buildPdfRenderStateKey,
+    cancelCanvasRender,
+    getPdfRenderEnvironment,
+    getPdfRenderStrategy,
+    getPdfSegmentCssLayout,
+    getVisiblePdfSegments,
+    renderPdfPage,
+    measurePreviewLoad,
+    type PdfRenderSegment
+  } from '../pdf';
+  import { cancelRender, scheduleRender } from '../renderScheduler';
   import type { ConnectionQuality, NetworkConfig } from '../networkMonitor';
   import type { PageShellLayout } from '../reader/layout';
   import {
@@ -101,7 +111,7 @@
   let bottomSegmentCanvas: HTMLCanvasElement | null = null;
   let interactionLayer: HTMLDivElement | null = null;
   let renderToken = 0;
-  let renderedScaleKey = '';
+  let renderedStateKey = '';
   let renderedSegments = new Set<string>();
   let isReady = layout.page.kind !== 'pdf';
   let fullQualityReady = layout.page.kind !== 'pdf';
@@ -120,10 +130,8 @@
   let previewDeferred = false;
   let previewDeferTimer: ReturnType<typeof setTimeout> | null = null;
   let renderIntentKey = '';
-  let layoutGeometryKey = '';
-  let previousLayoutGeometryKey = '';
-  let renderStrategyKey = '';
-  let previousRenderStrategyKey = '';
+  let renderStateKey = '';
+  let previousRenderStateKey = '';
   let eraserIndicatorPoint: PagePoint | null = null;
   let eraserIndicatorVisible = false;
   let eraserIndicatorStyle = '';
@@ -444,22 +452,23 @@
 
   // ── PDF segment rendering — pages render in thirds (top/middle/bottom) ──
 
+  function pdfSegmentCssLayout() {
+    return getPdfSegmentCssLayout({
+      pageHeight: layout.page.height,
+      pageScale: layout.scale,
+      ...getPdfRenderEnvironment()
+    });
+  }
+
   function visibleRenderSegments(): PdfRenderSegment[] {
-    const pageTop = layout.top;
-    const pageBottom = layout.top + layout.height;
-    const visibleTop = Math.max(viewportTop, pageTop) - pageTop;
-    const visibleBottom = Math.min(viewportTop + viewportHeight, pageBottom) - pageTop;
-
-    if (visibleBottom <= 0 || visibleTop >= layout.height) {
-      return ['top'];
-    }
-
-    const third = layout.height / 3;
-    const segments: PdfRenderSegment[] = [];
-    if (visibleTop < third) segments.push('top');
-    if (visibleTop < third * 2 && visibleBottom > third) segments.push('middle');
-    if (visibleBottom > third * 2) segments.push('bottom');
-    return segments.length > 0 ? segments : ['top'];
+    return getVisiblePdfSegments({
+      pageTop: layout.top,
+      pageHeight: layout.page.height,
+      pageScale: layout.scale,
+      viewportTop,
+      viewportHeight,
+      ...getPdfRenderEnvironment()
+    });
   }
 
   function fullRenderSegments(): PdfRenderSegment[] {
@@ -482,15 +491,15 @@
   }
 
   function useSegmentedPdfRender(): boolean {
-    return connectionQuality !== 'slow';
+    return getPdfRenderStrategy(connectionQuality) === 'segmented';
   }
 
-  function segmentKey(scaleKey: string, segment: PdfRenderSegment): string {
-    return `${scaleKey}:${segment}`;
+  function segmentKey(renderKey: string, segment: PdfRenderSegment): string {
+    return `${renderKey}:${segment}`;
   }
 
-  function hasSegment(scaleKey: string, segment: PdfRenderSegment): boolean {
-    return renderedSegments.has(segmentKey(scaleKey, segment));
+  function hasSegment(renderKey: string, segment: PdfRenderSegment): boolean {
+    return renderedSegments.has(segmentKey(renderKey, segment));
   }
 
   function canvasForSegment(segment: PdfRenderSegment): HTMLCanvasElement | null {
@@ -527,18 +536,27 @@
     }
   }
 
+  function cancelPdfRenderWork(): void {
+    if (layout.page.kind !== 'pdf') {
+      return;
+    }
+
+    cancelRender(layout.page.id);
+    renderToken += 1;
+    cancelSegmentRenders();
+  }
+
+  function invalidatePdfRenderState(): void {
+    cancelPdfRenderWork();
+    renderedStateKey = '';
+    renderedSegments = new Set<string>();
+    pendingScaleChange = false;
+    isReady = false;
+    fullQualityReady = false;
+  }
+
   function segmentCanvasStyle(segment: Exclude<PdfRenderSegment, 'full'>): string {
-    const devicePixelRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    const coarsePointer = typeof window !== 'undefined' ? (window.matchMedia?.('(pointer: coarse)')?.matches ?? false) : false;
-    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth || 1440 : 1440;
-    const bounds = getPdfSegmentCssBounds({
-      pageHeight: layout.page.height,
-      pageScale: layout.scale,
-      devicePixelRatio,
-      coarsePointer,
-      viewportWidth,
-      segment
-    });
+    const bounds = pdfSegmentCssLayout()[segment];
 
     return `top:${bounds.top}px; height:${bounds.height}px;`;
   }
@@ -548,17 +566,17 @@
   }
 
   function segmentReady(segment: PdfRenderSegment): boolean {
-    if (layout.page.kind !== 'pdf' || !renderedScaleKey) {
+    if (layout.page.kind !== 'pdf' || !renderedStateKey) {
       return false;
     }
 
-    return hasSegment(renderedScaleKey, segment);
+    return hasSegment(renderedStateKey, segment);
   }
 
-  function recomputeRenderReadiness(scaleKey: string): void {
+  function recomputeRenderReadiness(renderKey: string): void {
     const targetSegments = targetRenderSegments();
-    isReady = targetSegments.every((segment) => hasSegment(scaleKey, segment));
-    fullQualityReady = fullRenderSegments().every((segment) => hasSegment(scaleKey, segment));
+    isReady = targetSegments.every((segment) => hasSegment(renderKey, segment));
+    fullQualityReady = fullRenderSegments().every((segment) => hasSegment(renderKey, segment));
     if (isReady) {
       pendingScaleChange = false;
     }
@@ -612,9 +630,13 @@
       return;
     }
 
-    const nextScaleKey = `${Number(layout.scale.toFixed(4)).toFixed(4)}:${connectionQuality}`;
-    if (renderedScaleKey !== nextScaleKey) {
-      renderedScaleKey = nextScaleKey;
+    const nextRenderKey = renderStateKey;
+    if (!nextRenderKey) {
+      return;
+    }
+
+    if (renderedStateKey !== nextRenderKey) {
+      renderedStateKey = nextRenderKey;
       renderedSegments = new Set<string>();
       // Keep isReady true until the first new segment actually starts rendering.
       // This keeps the old canvas visible (at old resolution) instead of flashing
@@ -629,10 +651,10 @@
     }
 
     const visibleSegments = targetRenderSegments();
-    const missingVisibleSegments = visibleSegments.filter((segment) => !hasSegment(nextScaleKey, segment));
-    const missingFullSegments = fullRenderSegments().filter((segment) => !hasSegment(nextScaleKey, segment));
+    const missingVisibleSegments = visibleSegments.filter((segment) => !hasSegment(nextRenderKey, segment));
+    const missingFullSegments = fullRenderSegments().filter((segment) => !hasSegment(nextRenderKey, segment));
     if (missingFullSegments.length === 0) {
-      recomputeRenderReadiness(nextScaleKey);
+      recomputeRenderReadiness(nextRenderKey);
       return;
     }
 
@@ -641,7 +663,7 @@
     fullQualityReady = false;
     debugTimeline.log(
       'render-start',
-      `Render page ${layout.pageIndex + 1} visible=${missingVisibleSegments.join(', ') || 'none'} remaining=${missingFullSegments.join(', ')} at scale ${nextScaleKey}`
+      `Render page ${layout.pageIndex + 1} visible=${missingVisibleSegments.join(', ') || 'none'} remaining=${missingFullSegments.join(', ')} at state ${nextRenderKey}`
     );
 
     try {
@@ -664,12 +686,12 @@
           return;
         }
 
-        renderedSegments = new Set(renderedSegments).add(segmentKey(nextScaleKey, segment));
-        recomputeRenderReadiness(nextScaleKey);
+        renderedSegments = new Set(renderedSegments).add(segmentKey(nextRenderKey, segment));
+        recomputeRenderReadiness(nextRenderKey);
       }
 
       if (token === renderToken) {
-        recomputeRenderReadiness(nextScaleKey);
+        recomputeRenderReadiness(nextRenderKey);
         debugTimeline.log('render-end', `Rendered visible segments for page ${layout.pageIndex + 1}`);
 
         // Eagerly render remaining off-screen segments, ordered by proximity
@@ -680,7 +702,7 @@
         const hasBottom = visibleSegs.includes('bottom');
         // If bottom is visible but top isn't, reverse so middle renders before top
         if (hasBottom && !hasTop) segmentOrder.reverse();
-        const remaining = segmentOrder.filter((segment) => !hasSegment(nextScaleKey, segment));
+        const remaining = segmentOrder.filter((segment) => !hasSegment(nextRenderKey, segment));
         for (const segment of remaining) {
           const targetCanvas = canvasForSegment(segment);
           if (token !== renderToken || !targetCanvas || !file) break;
@@ -694,13 +716,13 @@
               segmentCanvas: segment !== 'full'
             });
             if (token !== renderToken) break;
-            renderedSegments = new Set(renderedSegments).add(segmentKey(nextScaleKey, segment));
-            recomputeRenderReadiness(nextScaleKey);
+            renderedSegments = new Set(renderedSegments).add(segmentKey(nextRenderKey, segment));
+            recomputeRenderReadiness(nextRenderKey);
           } catch { break; }
         }
 
         if (token === renderToken) {
-          recomputeRenderReadiness(nextScaleKey);
+          recomputeRenderReadiness(nextRenderKey);
           debugTimeline.log('render-end', `Rendered full page ${layout.pageIndex + 1}`);
         }
       }
@@ -1691,6 +1713,7 @@
     interactionLayer?.removeEventListener('touchmove', handleStylusTouch);
     interactionLayer?.removeEventListener('touchend', handleStylusTouch);
     interactionLayer?.removeEventListener('touchcancel', handleStylusTouch);
+    cancelRender(layout.page.id);
     cancelSegmentRenders();
     setInkSession(false);
     renderToken += 1;
@@ -1710,8 +1733,10 @@
   $: if (layout.page.kind !== 'pdf') {
     isReady = true;
     fullQualityReady = true;
-    renderedScaleKey = '';
+    renderedStateKey = '';
     renderedSegments = new Set<string>();
+    renderStateKey = '';
+    previousRenderStateKey = '';
     previewLoaded = true;
     previewLoadedPageId = layout.page.id;
   }
@@ -1719,48 +1744,30 @@
   $: if (layout.page.kind === 'pdf') {
     if (!allowRender && !renderSuspended) {
       renderSuspended = true;
-      if (fullCanvas || topSegmentCanvas || middleSegmentCanvas || bottomSegmentCanvas) {
-        renderToken += 1;
-        cancelSegmentRenders();
-      }
+      cancelPdfRenderWork();
     } else if (allowRender && renderSuspended) {
       renderSuspended = false;
     }
   }
 
-  $: layoutGeometryKey =
+  $: renderStateKey =
     layout.page.kind === 'pdf'
-      ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${Math.round(layout.width)}:${Math.round(layout.height)}`
+      ? buildPdfRenderStateKey({
+          pageScale: layout.scale,
+          pageWidth: layout.width,
+          pageHeight: layout.height,
+          connectionQuality
+        })
       : '';
 
-  $: if (layout.page.kind === 'pdf' && layoutGeometryKey && layoutGeometryKey !== previousLayoutGeometryKey) {
-    previousLayoutGeometryKey = layoutGeometryKey;
-    renderToken += 1;
-    cancelSegmentRenders();
-    renderedScaleKey = '';
-    renderedSegments = new Set<string>();
-    isReady = false;
-    fullQualityReady = false;
-  }
-
-  $: renderStrategyKey =
-    layout.page.kind === 'pdf'
-      ? `${connectionQuality}:${useSegmentedPdfRender() ? 'segmented' : 'full'}`
-      : '';
-
-  $: if (layout.page.kind === 'pdf' && renderStrategyKey && renderStrategyKey !== previousRenderStrategyKey) {
-    previousRenderStrategyKey = renderStrategyKey;
-    renderToken += 1;
-    cancelSegmentRenders();
-    renderedScaleKey = '';
-    renderedSegments = new Set<string>();
-    isReady = false;
-    fullQualityReady = false;
+  $: if (layout.page.kind === 'pdf' && renderStateKey && renderStateKey !== previousRenderStateKey) {
+    previousRenderStateKey = renderStateKey;
+    invalidatePdfRenderState();
   }
 
   $: renderIntentKey =
-    layout.page.kind === 'pdf'
-      ? `${Number(layout.scale.toFixed(4)).toFixed(4)}:${renderStrategyKey}:${viewportTop}:${viewportHeight}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
+    layout.page.kind === 'pdf' && renderStateKey
+      ? `${renderStateKey}:${viewportTop.toFixed(4)}:${viewportHeight.toFixed(4)}:${isActive ? 'active' : 'passive'}:${allowRender ? 'go' : 'wait'}`
       : '';
 
   // All connection speeds get full-res PDF.js rendering. On slow/medium,
@@ -1802,7 +1809,7 @@
   // On slow connections, skip preview images for pages far from the active page.
   // This prevents preview HTTP requests from consuming connection slots that the
   // active page's PDF.js range requests need.
-  // slow = no previews (skeleton → canvas only), medium = active ± 2, fast = all
+  // slow = active ± 1, medium = active ± 2, fast = all
   $: showPreview = (() => {
     if (networkConfig.previewRadius === Infinity) return true;
     return Math.abs(layout.pageIndex - activePageIndex) <= networkConfig.previewRadius;

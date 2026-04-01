@@ -165,13 +165,35 @@ Pages are divided into three vertical segments: `top`, `middle`, and `bottom`. O
 
 ### Segment Render Order
 
-Visible segments render first. Then remaining off-screen segments render ordered by proximity to the visible area:
+Visible segments render first, ordered by how much of each segment overlaps the viewport. If two segments have the same overlap, the one whose center is closer to the viewport center wins; exact ties keep natural top-to-bottom order.
+
+Then remaining off-screen segments render ordered by proximity to the visible area:
 
 - If `top` is visible → renders `middle` then `bottom`
 - If `bottom` is visible → renders `middle` then `top`
 - If `middle` is visible → renders `top` then `bottom`
 
-This means the segment the user is most likely to scroll into next renders before the one further away.
+This means the most visible part of the page renders first, and the segment the user is most likely to scroll into next renders before the one further away.
+
+### Segment Geometry Source of Truth
+
+The segment boundaries are computed once in `client/src/lib/pdf.ts` using the same device-pixel-aware split math that the rasterizer uses. `PageShell.svelte` then reuses those exact bounds for:
+
+- DOM slot placement
+- visible-segment detection
+- segment canvas sizing
+
+This matters because independent CSS thirds such as `33.333%` do not always match integer device-pixel splits. On compact/mobile layouts that mismatch can surface as thin horizontal seams, clipped bottoms, or startup stretch while stale geometry settles.
+
+### Render Invalidation
+
+Each PDF page shell tracks a `renderStateKey` that combines:
+
+- page shell geometry (`scale`, `width`, `height`)
+- render strategy (`segmented` vs `full-page`)
+- connection-driven mode changes that affect which canvas path is active
+
+When that key changes, the page shell cancels queued scheduler work, invalidates in-flight segment renders, and resets readiness state before the next paint. This prevents stale work from landing in a resized shell or from mixing segmented and full-page canvases during startup or network-mode transitions.
 
 ### Render Surface Cache
 
