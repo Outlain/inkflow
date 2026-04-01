@@ -27,7 +27,7 @@ Implemented in this repository today:
 - Bookmark current page and reopen to bookmark
 - Shape creation, move, resize, fill, and border-style controls
 - Annotated PDF export
-- Optional iPad `WKWebView` wrapper scaffold for Apple Pencil Pro squeeze
+- Optional iPad `WKWebView` wrapper scaffold for Apple Pencil Pro squeeze, launch-screen-correct viewport sizing, and LAN-hosted local testing
 
 Fresh large-PDF workflow validation now passes on the current build, including import, search, preview, bookmark, save, blank insert, PDF insert, and export on a 1620-page / 191 MB physics PDF.
 
@@ -50,7 +50,7 @@ Physical iPad Safari + Apple Pencil QA is still required for the strict release 
 
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — high-level system design, module boundaries, data model
 - [`INTERNALS.md`](./INTERNALS.md) — how the reader engine works: page loading pipeline, adaptive network behavior, PDF rendering segments, background pre-downloading, scroll coordination, service worker caching, and connection slot management
-- [`ios-wrapper/README.md`](./ios-wrapper/README.md) — optional native iPad wrapper for Apple Pencil Pro squeeze forwarding into the web reader
+- [`ios-wrapper/README.md`](./ios-wrapper/README.md) — optional native iPad wrapper for Apple Pencil Pro squeeze, `Info.plist` base URL setup, launch-screen sizing requirements, and XcodeGen instructions
 - [`RELEASE_GATES.md`](./RELEASE_GATES.md)
 - [`MIGRATION.md`](./MIGRATION.md)
 - [`PERFORMANCE_BUDGETS.md`](./PERFORMANCE_BUDGETS.md)
@@ -90,6 +90,18 @@ Run tests:
 ```bash
 npm test
 ```
+
+### Optional iPad Wrapper
+
+If you want real Apple Pencil Pro squeeze support, the web app alone is not enough. Use the native wrapper under [`ios-wrapper/`](./ios-wrapper/).
+
+Important setup points:
+
+- set `InkflowBaseURL` in [`ios-wrapper/InkflowPad/Resources/Info.plist`](./ios-wrapper/InkflowPad/Resources/Info.plist) to your backend's reachable URL
+- for a physical iPad on the same LAN, use your computer's LAN IP such as `http://192.168.1.20:3000`
+- `Info.plist` overrides the Swift fallback URL in [`ios-wrapper/InkflowPad/Sources/InkflowBridgeConfiguration.swift`](./ios-wrapper/InkflowPad/Sources/InkflowBridgeConfiguration.swift)
+- regenerate the Xcode project with `cd ios-wrapper && xcodegen generate` when wrapper resources or project structure change
+- the wrapper now includes a launch screen because iPadOS viewport sizing can break in portrait without one
 
 ## Docker / Portainer
 

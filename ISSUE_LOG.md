@@ -4,6 +4,12 @@ Use this log during development to record bugs by root cause, not just symptom.
 
 ## Entries
 
+### 2026-04-01: Native iPad wrapper could render portrait with the wrong viewport scale
+
+- Bug: the optional `WKWebView` iPad wrapper could appear overzoomed in portrait, with horizontal overflow across both the library and reader even though landscape looked mostly correct.
+- Root cause: the wrapper was missing a launch screen, which left the native app vulnerable to compatibility-style sizing behavior on iPadOS. That meant the web app could receive the wrong effective portrait viewport before any reader-specific layout logic even ran.
+- Fix: added a real launch storyboard, wired `UILaunchStoryboardName` in [`ios-wrapper/InkflowPad/Resources/Info.plist`](./ios-wrapper/InkflowPad/Resources/Info.plist), included the resource in [`ios-wrapper/project.yml`](./ios-wrapper/project.yml), and kept wrapper-side viewport logging in [`ios-wrapper/InkflowPad/Sources/InkflowWebView.swift`](./ios-wrapper/InkflowPad/Sources/InkflowWebView.swift) for future device debugging.
+
 ### 2026-04-01: PDF segment geometry drift caused seams, stretch, and stale paints
 
 - Bug: first-view PDF pages could show horizontal seams, temporary stretch/cropping, or stale partial paints, especially on mobile/compact layouts and during connection-mode changes.
