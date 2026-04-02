@@ -44,7 +44,13 @@
     type NativePencilSqueezeDetail
   } from '../nativeBridge';
   import { prefetchPdfPage } from '../pdf';
-  import { resolvePencilSqueezeMenuPlacement, type PencilSqueezeMenuSide } from '../pencilSqueeze';
+  import {
+    resolvePencilSqueezeArcContentHeight,
+    resolvePencilSqueezeArcDividers,
+    resolvePencilSqueezeArcToolLayout,
+    resolvePencilSqueezeMenuPlacement,
+    type PencilSqueezeMenuSide
+  } from '../pencilSqueeze';
   import { getNetworkConfig, getConnectionQuality, onQualityChange, type ConnectionQuality, type NetworkConfig } from '../networkMonitor';
   import { toggleTheme, getTheme, type Theme } from '../theme';
   import { waitForIdle } from '../renderScheduler';
@@ -109,6 +115,26 @@
     annotationText: string;
   }
 
+  type PencilSqueezeArcActionId = 'customize' | 'colors' | 'undo';
+
+  interface PencilSqueezeArcActionItem {
+    kind: 'action';
+    id: PencilSqueezeArcActionId;
+    label: string;
+    glyph: string;
+    accent?: string;
+  }
+
+  interface PencilSqueezeArcToolItem {
+    kind: 'tool';
+    id: EditorTool;
+    label: string;
+    glyph: string;
+    accent: string;
+  }
+
+  type PencilSqueezeArcItem = PencilSqueezeArcActionItem | PencilSqueezeArcToolItem;
+
   interface ZoomAnchor {
     pageId: string;
     pageIndex: number;
@@ -156,8 +182,17 @@
   const QUICK_MARKER_STABILIZATION = 24;
   const REPLACE_SAVE_DEBOUNCE_MS = 120;
   const PENCIL_SQUEEZE_LONG_PRESS_MS = 420;
-  const PENCIL_SQUEEZE_MENU_WIDTH = 236;
-  const PENCIL_SQUEEZE_MENU_MAX_HEIGHT = 420;
+  const PENCIL_SQUEEZE_MENU_WIDTH = 240;
+  const PENCIL_SQUEEZE_ARC_SHELL_WIDTH = 240;
+  const PENCIL_SQUEEZE_ARC_BUTTON_SIZE = 48;
+  const PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS = 8;
+  const PENCIL_SQUEEZE_ARC_SLOT_PITCH = PENCIL_SQUEEZE_ARC_BUTTON_SIZE;
+  const PENCIL_SQUEEZE_ARC_SHELL_HEIGHT = resolvePencilSqueezeArcContentHeight({
+    total: PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS,
+    buttonSize: PENCIL_SQUEEZE_ARC_BUTTON_SIZE
+  });
+  const PENCIL_SQUEEZE_MENU_MAX_HEIGHT = PENCIL_SQUEEZE_ARC_SHELL_HEIGHT + 188;
+  const PENCIL_SQUEEZE_ARC_DIVIDERS = resolvePencilSqueezeArcDividers(PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS);
   const textSizePresets = [18, 24, 32] as const;
   const middleMenuItems = [
     { id: 'lasso' as const, label: 'Lasso', glyph: '⬚', accent: '#8db5d8' },
@@ -173,7 +208,37 @@
     { id: 'laser' as const, label: 'Laser', glyph: '•', accent: '#f2615f' },
     { id: 'hand' as const, label: 'Hand', glyph: '✋', accent: '#3c7c66' }
   ];
-  const pencilSqueezeItems = middleMenuItems.filter((item) => item.id !== 'accessories');
+  function pencilSqueezeToolItem(tool: EditorTool): PencilSqueezeArcToolItem {
+    const item = middleMenuItems.find((entry) => entry.id === tool);
+    if (!item) {
+      throw new Error(`Missing pencil squeeze tool item for ${tool}`);
+    }
+
+    return {
+      kind: 'tool',
+      id: tool,
+      label: item.label,
+      glyph: item.glyph,
+      accent: item.accent
+    };
+  }
+
+  const pencilSqueezeArcItems: PencilSqueezeArcItem[] = [
+    { kind: 'action', id: 'customize', label: 'Customize tool', glyph: '≡' },
+    { kind: 'action', id: 'colors', label: 'Colors', glyph: '●' },
+    pencilSqueezeToolItem('pen'),
+    pencilSqueezeToolItem('pencil'),
+    pencilSqueezeToolItem('eraser'),
+    pencilSqueezeToolItem('highlighter'),
+    pencilSqueezeToolItem('shape'),
+    { kind: 'action', id: 'undo', label: 'Undo', glyph: '↺' },
+    pencilSqueezeToolItem('lasso'),
+    pencilSqueezeToolItem('text'),
+    pencilSqueezeToolItem('hand'),
+    pencilSqueezeToolItem('sticky'),
+    pencilSqueezeToolItem('tape'),
+    pencilSqueezeToolItem('laser')
+  ];
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
   const clientId = createClientId();
 
@@ -278,9 +343,12 @@
   let longPressTimer = 0;
   let suppressedClickKey = '';
   let pencilSqueezeMenuVisible = false;
+  let pencilSqueezeDetailsOpen = false;
   let pencilSqueezeMenuLeft = 0;
   let pencilSqueezeMenuTop = 0;
   let pencilSqueezeMenuSide: PencilSqueezeMenuSide = 'left';
+  let pencilSqueezeArcScroll: HTMLDivElement | null = null;
+  let pencilSqueezeArcWindowStart = 0;
   let pencilSqueezePressTimer = 0;
   let suppressedPencilSqueezeClickKey = '';
   let compactHeaderShown = false;
@@ -545,6 +613,60 @@
     return '#3c7c66';
   }
 
+  function pencilSqueezeArcItemStyle(index: number, total: number, accent: string): string {
+    const layout = resolvePencilSqueezeArcToolLayout({
+      index,
+      total,
+      side: pencilSqueezeMenuSide,
+      shellWidth: PENCIL_SQUEEZE_ARC_SHELL_WIDTH,
+      buttonSize: PENCIL_SQUEEZE_ARC_BUTTON_SIZE
+    });
+
+    return `left:${layout.left}px; top:${layout.top}px; width:${layout.size}px; height:${layout.size}px; --tool-accent:${accent};`;
+  }
+
+  function maxPencilSqueezeArcWindowStart(): number {
+    return Math.max(0, pencilSqueezeArcItems.length - PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS);
+  }
+
+  function visiblePencilSqueezeArcItems(): PencilSqueezeArcItem[] {
+    return pencilSqueezeArcItems.slice(
+      pencilSqueezeArcWindowStart,
+      pencilSqueezeArcWindowStart + PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS
+    );
+  }
+
+  function syncPencilSqueezeArcWindowFromScroll(): void {
+    if (!pencilSqueezeArcScroll) {
+      return;
+    }
+
+    const nextWindowStart = clamp(
+      Math.round(pencilSqueezeArcScroll.scrollTop / PENCIL_SQUEEZE_ARC_SLOT_PITCH),
+      0,
+      maxPencilSqueezeArcWindowStart()
+    );
+
+    if (nextWindowStart !== pencilSqueezeArcWindowStart) {
+      pencilSqueezeArcWindowStart = nextWindowStart;
+    }
+  }
+
+  function resetPencilSqueezeArcWindow(): void {
+    pencilSqueezeArcWindowStart = 0;
+    if (pencilSqueezeArcScroll) {
+      pencilSqueezeArcScroll.scrollTop = 0;
+    }
+  }
+
+  function pencilSqueezeArcScrollSensorHeight(): number {
+    return PENCIL_SQUEEZE_ARC_SHELL_HEIGHT + maxPencilSqueezeArcWindowStart() * PENCIL_SQUEEZE_ARC_SLOT_PITCH;
+  }
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+  }
+
   // ── Tool Panel Activation & Selection ──────────────────────────────────
 
   function panelForTool(tool: EditorTool): ReaderToolPanel {
@@ -615,6 +737,7 @@
 
   function closePencilSqueezeMenu(): void {
     pencilSqueezeMenuVisible = false;
+    pencilSqueezeDetailsOpen = false;
     suppressedPencilSqueezeClickKey = '';
   }
 
@@ -664,8 +787,10 @@
     pencilSqueezeMenuTop = placement.top;
     pencilSqueezeMenuSide = placement.side;
     pencilSqueezeMenuVisible = true;
+    pencilSqueezeDetailsOpen = false;
     activeToolPanel = null;
     closeStrokePopover();
+    tick().then(resetPencilSqueezeArcWindow);
   }
 
   function handlePencilSqueezeEvent(event: Event): void {
@@ -689,19 +814,40 @@
 
   function selectFromPencilSqueezeMenu(id: ReaderToolPanel | EditorTool): void {
     if (id === 'lasso' || id === 'sticky' || id === 'tape' || id === 'laser') {
+      const isSameTool = selectedTool === id;
       setSelectedTool(id);
       activeToolPanel = null;
       closeStrokePopover();
-      closePencilSqueezeMenu();
+      pencilSqueezeDetailsOpen = isSameTool ? !pencilSqueezeDetailsOpen : true;
       return;
     }
 
     if (id === 'pen' || id === 'pencil' || id === 'highlighter' || id === 'eraser' || id === 'text' || id === 'shape' || id === 'hand') {
+      const isSameTool = selectedTool === id;
       setSelectedTool(id);
       activeToolPanel = null;
       closeStrokePopover();
-      closePencilSqueezeMenu();
+      pencilSqueezeDetailsOpen = isSameTool ? !pencilSqueezeDetailsOpen : true;
     }
+  }
+
+  function handlePencilSqueezeArcItem(item: PencilSqueezeArcItem): void {
+    if (item.kind === 'tool') {
+      selectFromPencilSqueezeMenu(item.id);
+      return;
+    }
+
+    if (item.id === 'customize') {
+      openCurrentToolPanelFromPencilSqueeze();
+      return;
+    }
+
+    if (item.id === 'colors') {
+      pencilSqueezeDetailsOpen = true;
+      return;
+    }
+
+    undoFromPencilSqueeze();
   }
 
   function openCurrentToolPanelFromPencilSqueeze(): void {
@@ -759,13 +905,48 @@
     closePencilSqueezeMenu();
   }
 
+  function applyPencilSqueezeDebugStateFromUrl(): void {
+    if (typeof window === 'undefined' || !readerScreen) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('inkflowDebugSqueeze') !== '1') {
+      return;
+    }
+
+    const toolParam = params.get('inkflowDebugSqueezeTool');
+    if (
+      toolParam === 'pen' ||
+      toolParam === 'pencil' ||
+      toolParam === 'highlighter' ||
+      toolParam === 'eraser' ||
+      toolParam === 'text' ||
+      toolParam === 'shape' ||
+      toolParam === 'lasso' ||
+      toolParam === 'sticky' ||
+      toolParam === 'tape' ||
+      toolParam === 'laser' ||
+      toolParam === 'hand'
+    ) {
+      selectedTool = toolParam;
+    }
+
+    const rect = readerScreen.getBoundingClientRect();
+    const anchorX = Number(params.get('inkflowDebugSqueezeX'));
+    const anchorY = Number(params.get('inkflowDebugSqueezeY'));
+
+    openPencilSqueezeMenu({
+      clientX: Number.isFinite(anchorX) ? rect.left + anchorX : rect.left + rect.width * 0.72,
+      clientY: Number.isFinite(anchorY) ? rect.top + anchorY : rect.top + rect.height * 0.36
+    });
+
+    pencilSqueezeDetailsOpen = params.get('inkflowDebugSqueezeDetails') === '1';
+  }
+
   function toggleStylusOnlyFromPencilSqueeze(): void {
     stylusOnly = !stylusOnly;
     closePencilSqueezeMenu();
-  }
-
-  function quickPreviousToolLabel(): string {
-    return previousSelectedTool ? toolLabel(previousSelectedTool) : 'Previous';
   }
 
   function undoFromPencilSqueeze(): void {
@@ -774,15 +955,6 @@
     }
 
     undoCurrentPage();
-    closePencilSqueezeMenu();
-  }
-
-  function redoFromPencilSqueeze(): void {
-    if (!canRedoAvailable) {
-      return;
-    }
-
-    redoCurrentPage();
     closePencilSqueezeMenu();
   }
 
@@ -2641,6 +2813,10 @@
       }
     });
     qualityUnsub = unsubQuality;
+
+    void tick().then(() => {
+      applyPencilSqueezeDebugStateFromUrl();
+    });
   });
 
   onDestroy(() => {
@@ -3037,202 +3213,242 @@
       role="dialog"
       style={`left:${pencilSqueezeMenuLeft}px; top:${pencilSqueezeMenuTop}px; --tool-accent:${currentToolAccent()};`}
     >
-      <div class="pencil-squeeze-orb" aria-hidden="true"></div>
-      <div class="pencil-squeeze-header">
-        <div class="pencil-squeeze-section-title">
-          <strong>Pencil Menu</strong>
-          <span>{toolLabel(selectedTool)}</span>
+      <div class="pencil-squeeze-arc-shell">
+        <svg aria-hidden="true" class="pencil-squeeze-shell-svg" viewBox={`0 0 240 ${PENCIL_SQUEEZE_ARC_SHELL_HEIGHT}`}>
+          <path
+            class="pencil-squeeze-shell-outline"
+            d="M 134 295 A 135 135 0 0 1 190 35"
+          ></path>
+          <path
+            class="pencil-squeeze-shell-track"
+            d="M 134 295 A 135 135 0 0 1 190 35"
+          ></path>
+          {#each PENCIL_SQUEEZE_ARC_DIVIDERS as dividerPath}
+            <path class="pencil-squeeze-shell-divider" d={dividerPath}></path>
+          {/each}
+        </svg>
+
+        <div class="pencil-squeeze-arc-scroll-sensor" bind:this={pencilSqueezeArcScroll} on:scroll={syncPencilSqueezeArcWindowFromScroll}>
+          <div class="pencil-squeeze-arc-scroll-track">
+            {#each Array.from({ length: maxPencilSqueezeArcWindowStart() + 1 }) as _, index}
+              <div class="pencil-squeeze-arc-scroll-step" style={`height:${PENCIL_SQUEEZE_ARC_SLOT_PITCH}px;`} aria-hidden="true"></div>
+            {/each}
+            <div
+              class="pencil-squeeze-arc-scroll-endcap"
+              style={`height:${Math.max(0, PENCIL_SQUEEZE_ARC_SHELL_HEIGHT - PENCIL_SQUEEZE_ARC_SLOT_PITCH)}px;`}
+              aria-hidden="true"
+            ></div>
+          </div>
         </div>
-        <p>Quick tool switching and adjustments near the tip.</p>
+
+        <div class="pencil-squeeze-arc-rail">
+            {#each visiblePencilSqueezeArcItems() as item, index}
+              <button
+                class:active={item.kind === 'tool' && selectedTool === item.id}
+                class:pencil-squeeze-arc-action={item.kind === 'action'}
+                class:pencil-squeeze-arc-color-action={item.kind === 'action' && item.id === 'colors'}
+                class="pencil-squeeze-arc-tool"
+                type="button"
+                aria-label={item.label}
+                disabled={
+                  item.kind === 'action' &&
+                  ((item.id === 'undo' && !canUndoAvailable) || (item.id === 'customize' && !canOpenCurrentToolPanel()))
+                }
+                style={pencilSqueezeArcItemStyle(index, PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS, item.kind === 'tool' ? item.accent : currentToolAccent())}
+                on:click={() => handlePencilSqueezeArcItem(item)}
+                on:pointerdown={(event) => {
+                  if (item.kind === 'action' && item.id === 'undo') {
+                    event.preventDefault();
+                    undoFromPencilSqueeze();
+                  }
+                }}
+              >
+                {#if item.kind === 'action' && item.id === 'colors'}
+                  <span class="pencil-squeeze-color-icon" aria-hidden="true" style={`background:${currentToolAccent()};`}></span>
+                {:else}
+                  <span class="pencil-squeeze-glyph" aria-hidden="true">{item.glyph}</span>
+                {/if}
+              </button>
+            {/each}
+        </div>
       </div>
 
-      <div class="pencil-squeeze-actions">
-        <button class="button subtle" type="button" disabled={!canUndoAvailable} on:pointerdown={undoFromPencilSqueeze}>Undo</button>
-        <button class="button subtle" type="button" disabled={!canRedoAvailable} on:pointerdown={redoFromPencilSqueeze}>Redo</button>
-        <button class="button subtle" type="button" disabled={!previousSelectedTool || previousSelectedTool === selectedTool} on:click={handlePencilSwitchPreviousEvent}>
-          {quickPreviousToolLabel()}
-        </button>
-        <button class="button subtle" type="button" disabled={!canOpenCurrentToolPanel()} on:click={openCurrentToolPanelFromPencilSqueeze}>Options</button>
-      </div>
-
-      <div class="pencil-squeeze-scroll">
-        {#each pencilSqueezeItems as item}
-          <button
-            class:active={selectedTool === item.id}
-            class="pencil-squeeze-tool"
-            type="button"
-            aria-label={item.label}
-            style={`--tool-accent:${item.accent};`}
-            on:click={() => selectFromPencilSqueezeMenu(item.id)}
-          >
-            <span class="pencil-squeeze-glyph" aria-hidden="true">{item.glyph}</span>
-            <span class="pencil-squeeze-label">{item.label}</span>
-          </button>
-        {/each}
-
-        {#if selectedTool === 'pen' || selectedTool === 'pencil' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Width</strong>
-              <span>Preset {selectedSize}</span>
+      {#if pencilSqueezeDetailsOpen}
+        <div class="pencil-squeeze-details">
+          <div class="pencil-squeeze-detail-header">
+            <div class="pencil-squeeze-detail-title">
+              <strong>{toolLabel(selectedTool)}</strong>
+              <span>Quick palette</span>
             </div>
-            <div class="size-group pencil-squeeze-size-group">
-              {#each sizePresets as preset}
-                <button class:active={selectedSize === preset.value} class="size-button" type="button" aria-label={preset.label} on:click={() => selectQuickSizePreset(preset.value, true)}>
-                  <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
-                </button>
-              {/each}
-            </div>
-            {#if selectedTool !== 'eraser'}
-              <div class="pencil-squeeze-section-title">
-                <strong>Color</strong>
-                <span>{toolLabel(selectedTool)}</span>
+            <span class="pencil-squeeze-detail-swatch" aria-hidden="true" style={`background:${currentToolAccent()};`}></span>
+          </div>
+
+          <div class="pencil-squeeze-scroll">
+            {#if selectedTool === 'pen' || selectedTool === 'pencil' || selectedTool === 'highlighter' || selectedTool === 'eraser'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Width</strong>
+                  <span>Preset {selectedSize}</span>
+                </div>
+                <div class="size-group pencil-squeeze-size-group">
+                  {#each sizePresets as preset}
+                    <button class:active={selectedSize === preset.value} class="size-button" type="button" aria-label={preset.label} on:click={() => selectQuickSizePreset(preset.value, true)}>
+                      <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
+                    </button>
+                  {/each}
+                </div>
+                {#if selectedTool !== 'eraser'}
+                  <div class="pencil-squeeze-section-title">
+                    <strong>Color</strong>
+                    <span>{toolLabel(selectedTool)}</span>
+                  </div>
+                  <div class="palette-group pencil-squeeze-color-group">
+                    {#each colorChips as color}
+                      <button
+                        class:active={selectedColor === color}
+                        class="color-chip popover-chip"
+                        type="button"
+                        aria-label={`Choose ${color}`}
+                        style={`background:${color}`}
+                        on:click={() => selectPencilSqueezeColor(color)}
+                      ></button>
+                    {/each}
+                  </div>
+                {/if}
               </div>
-              <div class="palette-group pencil-squeeze-color-group">
-                {#each colorChips as color}
-                  <button
-                    class:active={selectedColor === color}
-                    class="color-chip popover-chip"
-                    type="button"
-                    aria-label={`Choose ${color}`}
-                    style={`background:${color}`}
-                    on:click={() => selectPencilSqueezeColor(color)}
-                  ></button>
-                {/each}
+            {:else if selectedTool === 'text'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Text size</strong>
+                  <span>{textFontSize}px</span>
+                </div>
+                <div class="text-size-group">
+                  {#each textSizePresets as size}
+                    <button class:active={textFontSize === size} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeTextSize(size)}>
+                      {size}px
+                    </button>
+                  {/each}
+                </div>
+                <div class="pencil-squeeze-section-title">
+                  <strong>Color</strong>
+                  <span>Text</span>
+                </div>
+                <div class="palette-group pencil-squeeze-color-group">
+                  {#each colorChips as color}
+                    <button
+                      class:active={selectedColor === color}
+                      class="color-chip popover-chip"
+                      type="button"
+                      aria-label={`Choose ${color}`}
+                      style={`background:${color}`}
+                      on:click={() => selectPencilSqueezeColor(color)}
+                    ></button>
+                  {/each}
+                </div>
+              </div>
+            {:else if selectedTool === 'shape'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Shape</strong>
+                  <span>{selectedShapeKind}</span>
+                </div>
+                <div class="shape-options popover-shape-options">
+                  <button class:active={selectedShapeKind === 'rectangle'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('rectangle')}>▭</button>
+                  <button class:active={selectedShapeKind === 'ellipse'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('ellipse')}>◯</button>
+                  <button class:active={selectedShapeKind === 'triangle'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('triangle')}>△</button>
+                  <button class:active={selectedShapeKind === 'diamond'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('diamond')}>◆</button>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => { selectedShapeFill = !selectedShapeFill; closePencilSqueezeMenu(); }}>
+                    {selectedShapeFill ? 'Filled' : 'Outline'}
+                  </button>
+                  <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => { selectedShapeLineStyle = 'solid'; closePencilSqueezeMenu(); }}>
+                    Solid
+                  </button>
+                </div>
+                <div class="palette-group pencil-squeeze-color-group">
+                  {#each colorChips as color}
+                    <button
+                      class:active={selectedColor === color}
+                      class="color-chip popover-chip"
+                      type="button"
+                      aria-label={`Choose ${color}`}
+                      style={`background:${color}`}
+                      on:click={() => selectPencilSqueezeColor(color)}
+                    ></button>
+                  {/each}
+                </div>
+              </div>
+            {:else if selectedTool === 'lasso'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Lasso</strong>
+                  <span>{lassoSelectionCount} selected</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={lassoMode === 'rectangle'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLassoMode('rectangle')}>Rectangle</button>
+                  <button class:active={lassoMode === 'freehand'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLassoMode('freehand')}>Freehand</button>
+                </div>
+                <div class="panel-action-grid">
+                  <button class="button subtle" type="button" disabled={lassoSelectionCount === 0} on:click={() => { void clearLassoSelection(); closePencilSqueezeMenu(); }}>Clear</button>
+                  <button class="button subtle danger" type="button" disabled={lassoSelectionCount === 0} on:click={() => { void deleteLassoSelection(); closePencilSqueezeMenu(); }}>Delete</button>
+                </div>
+              </div>
+            {:else if selectedTool === 'sticky'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Sticky color</strong>
+                  <span>Quick note</span>
+                </div>
+                <div class="palette-group pencil-squeeze-color-group">
+                  <button class:active={stickyNoteColor === '#f6a6a6'} class="color-chip popover-chip" type="button" aria-label="Pink sticky note" style="background:#f6a6a6" on:click={() => { stickyNoteColor = '#f6a6a6'; closePencilSqueezeMenu(); }}></button>
+                  <button class:active={stickyNoteColor === '#ffd587'} class="color-chip popover-chip" type="button" aria-label="Amber sticky note" style="background:#ffd587" on:click={() => { stickyNoteColor = '#ffd587'; closePencilSqueezeMenu(); }}></button>
+                  <button class:active={stickyNoteColor === '#f5ef83'} class="color-chip popover-chip" type="button" aria-label="Yellow sticky note" style="background:#f5ef83" on:click={() => { stickyNoteColor = '#f5ef83'; closePencilSqueezeMenu(); }}></button>
+                  <button class:active={stickyNoteColor === '#a8efb7'} class="color-chip popover-chip" type="button" aria-label="Green sticky note" style="background:#a8efb7" on:click={() => { stickyNoteColor = '#a8efb7'; closePencilSqueezeMenu(); }}></button>
+                  <button class:active={stickyNoteColor === '#b6d8ff'} class="color-chip popover-chip" type="button" aria-label="Blue sticky note" style="background:#b6d8ff" on:click={() => { stickyNoteColor = '#b6d8ff'; closePencilSqueezeMenu(); }}></button>
+                </div>
+              </div>
+            {:else if selectedTool === 'tape'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Tape</strong>
+                  <span>{tapeWidth}px</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeStraightMode(true)}>Straight</button>
+                  <button class:active={!tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeStraightMode(false)}>Free</button>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={tapeWidth === 18} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeWidth(18)}>Thin</button>
+                  <button class:active={tapeWidth === 30} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeWidth(30)}>Medium</button>
+                </div>
+              </div>
+            {:else if selectedTool === 'laser'}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Laser</strong>
+                  <span>{laserPointerMode}</span>
+                </div>
+                <div class="stroke-popover-mode-group panel-mode-group">
+                  <button class:active={laserPointerMode === 'dot'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLaserMode('dot')}>Dot</button>
+                  <button class:active={laserPointerMode === 'line'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLaserMode('line')}>Line</button>
+                </div>
+              </div>
+            {:else}
+              <div class="pencil-squeeze-section">
+                <div class="pencil-squeeze-section-title">
+                  <strong>Navigation</strong>
+                  <span>Hand tool</span>
+                </div>
+                <div class="panel-action-grid">
+                  <button class="button subtle" type="button" on:click={toggleStylusOnlyFromPencilSqueeze}>{stylusOnly ? 'Stylus only on' : 'Stylus only off'}</button>
+                  <button class="button subtle" type="button" on:click={() => { resetZoom(); closePencilSqueezeMenu(); }}>Reset zoom</button>
+                </div>
               </div>
             {/if}
           </div>
-        {:else if selectedTool === 'text'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Text size</strong>
-              <span>{textFontSize}px</span>
-            </div>
-            <div class="text-size-group">
-              {#each textSizePresets as size}
-                <button class:active={textFontSize === size} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeTextSize(size)}>
-                  {size}px
-                </button>
-              {/each}
-            </div>
-            <div class="pencil-squeeze-section-title">
-              <strong>Color</strong>
-              <span>Text</span>
-            </div>
-            <div class="palette-group pencil-squeeze-color-group">
-              {#each colorChips as color}
-                <button
-                  class:active={selectedColor === color}
-                  class="color-chip popover-chip"
-                  type="button"
-                  aria-label={`Choose ${color}`}
-                  style={`background:${color}`}
-                  on:click={() => selectPencilSqueezeColor(color)}
-                ></button>
-              {/each}
-            </div>
-          </div>
-        {:else if selectedTool === 'shape'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Shape</strong>
-              <span>{selectedShapeKind}</span>
-            </div>
-            <div class="shape-options popover-shape-options">
-              <button class:active={selectedShapeKind === 'rectangle'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('rectangle')}>▭</button>
-              <button class:active={selectedShapeKind === 'ellipse'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('ellipse')}>◯</button>
-              <button class:active={selectedShapeKind === 'triangle'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('triangle')}>△</button>
-              <button class:active={selectedShapeKind === 'diamond'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('diamond')}>◆</button>
-            </div>
-            <div class="stroke-popover-mode-group panel-mode-group">
-              <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => { selectedShapeFill = !selectedShapeFill; closePencilSqueezeMenu(); }}>
-                {selectedShapeFill ? 'Filled' : 'Outline'}
-              </button>
-              <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => { selectedShapeLineStyle = 'solid'; closePencilSqueezeMenu(); }}>
-                Solid
-              </button>
-            </div>
-            <div class="palette-group pencil-squeeze-color-group">
-              {#each colorChips as color}
-                <button
-                  class:active={selectedColor === color}
-                  class="color-chip popover-chip"
-                  type="button"
-                  aria-label={`Choose ${color}`}
-                  style={`background:${color}`}
-                  on:click={() => selectPencilSqueezeColor(color)}
-                ></button>
-              {/each}
-            </div>
-          </div>
-        {:else if selectedTool === 'lasso'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Lasso</strong>
-              <span>{lassoSelectionCount} selected</span>
-            </div>
-            <div class="stroke-popover-mode-group panel-mode-group">
-              <button class:active={lassoMode === 'rectangle'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLassoMode('rectangle')}>Rectangle</button>
-              <button class:active={lassoMode === 'freehand'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLassoMode('freehand')}>Freehand</button>
-            </div>
-            <div class="panel-action-grid">
-              <button class="button subtle" type="button" disabled={lassoSelectionCount === 0} on:click={() => { void clearLassoSelection(); closePencilSqueezeMenu(); }}>Clear</button>
-              <button class="button subtle danger" type="button" disabled={lassoSelectionCount === 0} on:click={() => { void deleteLassoSelection(); closePencilSqueezeMenu(); }}>Delete</button>
-            </div>
-          </div>
-        {:else if selectedTool === 'sticky'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Sticky color</strong>
-              <span>Quick note</span>
-            </div>
-            <div class="palette-group pencil-squeeze-color-group">
-              <button class:active={stickyNoteColor === '#f6a6a6'} class="color-chip popover-chip" type="button" aria-label="Pink sticky note" style="background:#f6a6a6" on:click={() => { stickyNoteColor = '#f6a6a6'; closePencilSqueezeMenu(); }}></button>
-              <button class:active={stickyNoteColor === '#ffd587'} class="color-chip popover-chip" type="button" aria-label="Amber sticky note" style="background:#ffd587" on:click={() => { stickyNoteColor = '#ffd587'; closePencilSqueezeMenu(); }}></button>
-              <button class:active={stickyNoteColor === '#f5ef83'} class="color-chip popover-chip" type="button" aria-label="Yellow sticky note" style="background:#f5ef83" on:click={() => { stickyNoteColor = '#f5ef83'; closePencilSqueezeMenu(); }}></button>
-              <button class:active={stickyNoteColor === '#a8efb7'} class="color-chip popover-chip" type="button" aria-label="Green sticky note" style="background:#a8efb7" on:click={() => { stickyNoteColor = '#a8efb7'; closePencilSqueezeMenu(); }}></button>
-              <button class:active={stickyNoteColor === '#b6d8ff'} class="color-chip popover-chip" type="button" aria-label="Blue sticky note" style="background:#b6d8ff" on:click={() => { stickyNoteColor = '#b6d8ff'; closePencilSqueezeMenu(); }}></button>
-            </div>
-          </div>
-        {:else if selectedTool === 'tape'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Tape</strong>
-              <span>{tapeWidth}px</span>
-            </div>
-            <div class="stroke-popover-mode-group panel-mode-group">
-              <button class:active={tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeStraightMode(true)}>Straight</button>
-              <button class:active={!tapeStraightMode} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeStraightMode(false)}>Free</button>
-            </div>
-            <div class="stroke-popover-mode-group panel-mode-group">
-              <button class:active={tapeWidth === 18} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeWidth(18)}>Thin</button>
-              <button class:active={tapeWidth === 30} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeTapeWidth(30)}>Medium</button>
-            </div>
-          </div>
-        {:else if selectedTool === 'laser'}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Laser</strong>
-              <span>{laserPointerMode}</span>
-            </div>
-            <div class="stroke-popover-mode-group panel-mode-group">
-              <button class:active={laserPointerMode === 'dot'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLaserMode('dot')}>Dot</button>
-              <button class:active={laserPointerMode === 'line'} class="stroke-mode-button" type="button" on:click={() => selectPencilSqueezeLaserMode('line')}>Line</button>
-            </div>
-          </div>
-        {:else}
-          <div class="pencil-squeeze-section">
-            <div class="pencil-squeeze-section-title">
-              <strong>Navigation</strong>
-              <span>Hand tool</span>
-            </div>
-            <div class="panel-action-grid">
-              <button class="button subtle" type="button" on:click={toggleStylusOnlyFromPencilSqueeze}>{stylusOnly ? 'Stylus only on' : 'Stylus only off'}</button>
-              <button class="button subtle" type="button" on:click={() => { resetZoom(); closePencilSqueezeMenu(); }}>Reset zoom</button>
-            </div>
-          </div>
-        {/if}
-      </div>
+        </div>
+      {/if}
     </div>
   {/if}
 
