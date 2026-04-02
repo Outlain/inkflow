@@ -807,6 +807,14 @@
       return;
     }
 
+    // Safety: if a previous stroke's pointerup was missed (can happen on iOS
+    // after many rapid capture/release cycles), flush the stale state so the
+    // new stroke starts clean.  Without this, activePointerId stays set and
+    // previewAnnotations stays non-null, making new strokes invisible.
+    if (activePointerId !== null && activePointerId !== event.pointerId) {
+      finishStroke();
+    }
+
     window.getSelection?.()?.removeAllRanges();
     (document.activeElement as HTMLElement | null)?.blur?.();
     event.preventDefault();

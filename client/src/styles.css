@@ -2100,6 +2100,11 @@ img {
   overflow: visible;
   z-index: 2;
   pointer-events: none;
+  /* Promote to its own compositing layer so iOS WebKit reliably repaints
+     when SVG children change. Without this, WebKit can cache a stale
+     rasterized bitmap after ~10+ path elements, causing new strokes to
+     appear invisible until a scroll or zoom forces a full repaint. */
+  will-change: transform;
 }
 
 .annotation-layer {
