@@ -1,9 +1,10 @@
 # Inkflow Technical Internals
 
-This document explains how the reader engine works under the hood. It covers the page loading pipeline, adaptive network behavior, PDF rendering strategy, background pre-downloading, and scroll/navigation coordination. It is intended for contributors and anyone wanting to understand the system beyond what `ARCHITECTURE.md` covers.
+This document explains how the reader engine works under the hood. It covers the page loading pipeline, adaptive network behavior, PDF rendering strategy, background pre-downloading, and scroll/navigation coordination. It is intended for contributors and anyone wanting to understand the system beyond the high-level architecture summary.
 
-For deployment, configuration, and project overview, see [`README.md`](./README.md).
-For high-level system design, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+For deployment, configuration, and project overview, see [`../../README.md`](../../README.md).
+For the documentation map, see [`../README.md`](../README.md).
+For high-level system design, see [`system-overview.md`](./system-overview.md).
 
 ---
 

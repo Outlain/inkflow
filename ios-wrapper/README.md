@@ -8,6 +8,7 @@ The wrapper is intentionally small:
 - a `WKWebView` host
 - a Pencil squeeze bridge
 - a launch screen so iPadOS uses the correct viewport sizing
+- an asset catalog with the app icon
 - an XcodeGen project spec
 
 The web app stays local. The wrapper only loads the configured base URL and forwards Pencil squeeze events into the page via JavaScript.
@@ -26,6 +27,14 @@ The wrapper now includes:
 
 - `InkflowPad/Resources/LaunchScreen.storyboard`
 - `UILaunchStoryboardName = LaunchScreen` in `Info.plist`
+
+## App Icon
+
+The asset catalog at `InkflowPad/Resources/Assets.xcassets/AppIcon.appiconset/` contains a single 1024x1024 `AppIcon.png`. Xcode auto-generates all required sizes from it at build time (iOS 18+ single-size icon support).
+
+To replace the icon, swap `AppIcon.png` with a new 1024x1024 PNG. No other changes needed.
+
+If the icon does not appear after a rebuild, delete the app from the iPad and reinstall to clear cached icon data.
 
 That change keeps the native app in the normal iPad sizing path, so the web app receives the correct portrait viewport.
 
@@ -98,7 +107,7 @@ open InkflowPad.xcodeproj
 Regenerate the Xcode project again whenever you change:
 
 - `project.yml`
-- native resource files such as `LaunchScreen.storyboard`
+- native resource files such as `LaunchScreen.storyboard` or `Assets.xcassets`
 - the native source layout in `InkflowPad/Sources/`
 
 If you do not want to use `xcodegen`, you can still copy the Swift sources into a manual Xcode project.
@@ -129,6 +138,7 @@ Before debugging the wrapper, verify that the same URL opens from Safari on the 
 - `InkflowPad/Sources/InkflowWebView.swift` - `WKWebView` host and Pencil squeeze bridge
 - `InkflowPad/Resources/Info.plist` - bundle metadata and local networking ATS exceptions
 - `InkflowPad/Resources/LaunchScreen.storyboard` - launch screen required for correct iPad sizing
+- `InkflowPad/Resources/Assets.xcassets/` - asset catalog containing the app icon (1024x1024 PNG)
 
 ## Notes
 

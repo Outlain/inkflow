@@ -1,4 +1,7 @@
-# Inkflow Final Verification Snapshot
+# Inkflow Verification Snapshot (Archived)
+
+This document preserves the detailed verification pass from `2026-03-20`.
+For current release status, use [`../status/release-gates.md`](../status/release-gates.md).
 
 Date: 2026-03-20
 

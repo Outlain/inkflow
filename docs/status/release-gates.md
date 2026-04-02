@@ -1,5 +1,49 @@
 # Inkflow Release Gates
 
+This is the active status document for the rebuild. It combines the phase-by-phase gate view with the latest consolidated verification summary so dated snapshots can stay in the archive instead of the main docs path.
+
+Last consolidated verification update: `2026-03-20`
+
+Full dated checklist: [`../archive/2026-03-20-verification-snapshot.md`](../archive/2026-03-20-verification-snapshot.md)
+
+## Latest Verification Summary
+
+### Automated Checks
+
+- `npm run build`: PASS
+- `npm test`: PASS
+- Layout engine deterministic shell sizing: PASS
+- Visible-window active-page calculation on large layouts: PASS
+- SQLite insert/delete ordering tests: PASS
+- Append vs replace save behavior tests: PASS
+- Draft timestamp precedence tests: PASS
+- PDF import, insert-PDF-pages, and bookmark reopen integration tests: PASS
+
+### Live Runtime Checks
+
+- Production server start, `/health`, `/api/library`, and `/api/documents/:id`: PASS
+- Byte-range PDF content, deep-page preview generation, and append save on large documents: PASS
+- Blank-page insert, bookmark update, search, insert-PDF-pages, export, and reopen flow: PASS
+
+### Measured Snapshot
+
+- Stress import (`191 MB`, `1620` pages): `31.65s`
+- Baseline import (`46 MB`, `875` pages): `11.95s`
+- Stress search query (`physics`): `203ms`
+- Baseline search query (`calculus`): `22.72ms`
+- Stress deep-page preview generation: `1.08s`
+- Stress append save: `10.26ms`
+- Stress blank-page insert: `45.44ms`
+- Stress insert-PDF-pages: `1.64s`
+- Stress export after structural edits: `2.43s`
+
+### Remaining Non-Code Blockers
+
+- Physical iPad Safari scroll QA on the current reader build
+- Physical Apple Pencil QA for dots, rapid pen lifts, stylus-only writing, and page stability
+- Physical compact-toolbar usability review in iPad portrait
+- Physical continuous-writing-during-save QA
+
 ## Phase 0: Architecture and Migration Design
 
 Status: `PASS`
@@ -42,8 +86,8 @@ Phase 1 gate notes:
   - anonymized stress textbook PDF (`1620` pages, `191 MB`)
   - anonymized baseline textbook PDF (`875` pages, `46 MB`)
 - Verified `docker compose up -d --build` and healthy container earlier in the session history.
-- Added a dedicated [`docker-compose.portainer.yml`](./docker-compose.portainer.yml) that pulls `ghcr.io/outlain/inkflow-two:latest`.
-- Added [`.github/workflows/publish-ghcr.yml`](./.github/workflows/publish-ghcr.yml) so GitHub can publish multi-arch images directly to GHCR.
+- Added a dedicated [`docker-compose.portainer.yml`](../../docker-compose.portainer.yml) that pulls `ghcr.io/outlain/inkflow-two:latest`.
+- Added [`.github/workflows/publish-ghcr.yml`](../../.github/workflows/publish-ghcr.yml) so GitHub can publish multi-arch images directly to GHCR.
 
 ## Phase 2: Stable Continuous Reader Shell
 

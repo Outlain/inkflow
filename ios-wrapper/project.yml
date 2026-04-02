@@ -17,8 +17,9 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: InkflowPad/Sources
-    resources:
-      - path: InkflowPad/Resources/LaunchScreen.storyboard
+      - path: InkflowPad/Resources
+        excludes:
+          - Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.inkflow.inkflowpad

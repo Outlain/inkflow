@@ -3,6 +3,7 @@
 ## Purpose
 
 These budgets are the acceptance targets for the rebuild. They are intentionally biased toward smoothness and stability over minimal CPU or RAM usage.
+Current measured results are summarized in [`../status/release-gates.md`](../status/release-gates.md). The dated raw validation snapshot is preserved in [`../archive/2026-03-20-verification-snapshot.md`](../archive/2026-03-20-verification-snapshot.md).
 
 ## Test Assets
 
@@ -153,23 +154,3 @@ Required measurements:
 - Physical iPad Safari measurements have not been captured in this environment.
 - Physical Apple Pencil measurements have not been captured in this environment.
 - Frame-budget claims for scroll and inking remain partially design-backed until hardware QA is run.
-
-## Measured Snapshot on 2026-03-20
-
-Collected from the current production build against local test assets:
-
-- Stress import (`191 MB`, `1620` pages): `31.65s`
-- Baseline import (`46 MB`, `875` pages): `11.95s`
-- Stress search query (`physics`): `203ms`
-- Baseline search query (`calculus`): `22.72ms`
-- Stress deep-page preview generation: `1.08s`
-- Stress byte-range response setup: `2.43ms`
-- Stress blank-page insert: `45.44ms`
-- Stress insert-PDF-pages: `1.64s`
-- Stress annotated export after structural edits: `2.43s`
-
-Interpretation:
-
-- Import times are above the early optimistic Phase 1 metadata-extraction targets, but the complete import pipeline includes copy, linearization, metadata extraction, preview readiness, page row creation, and text extraction/indexing.
-- Search, insert, preview, and export are currently within comfortable bounds for the stated budgets.
-- Physical iPad Safari scroll and Pencil measurements remain blocked on device availability, so frame-budget claims for those gates are still design-backed rather than directly measured on hardware.

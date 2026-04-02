@@ -53,15 +53,18 @@ Physical iPad Safari + Apple Pencil QA is still required for the strict release 
 - Realtime: WebSocket
 - Deployment: single container, single persistent mount
 
-## Key Docs
+## Documentation
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — high-level system design, module boundaries, data model
-- [`INTERNALS.md`](./INTERNALS.md) — how the reader engine works: page loading pipeline, adaptive network behavior, PDF rendering segments, background pre-downloading, scroll coordination, service worker caching, and connection slot management
-- [`ios-wrapper/README.md`](./ios-wrapper/README.md) — optional native iPad wrapper for Apple Pencil Pro squeeze, `Info.plist` base URL setup, launch-screen sizing requirements, and XcodeGen instructions
-- [`RELEASE_GATES.md`](./RELEASE_GATES.md)
-- [`MIGRATION.md`](./MIGRATION.md)
-- [`PERFORMANCE_BUDGETS.md`](./PERFORMANCE_BUDGETS.md)
-- [`ISSUE_LOG.md`](./ISSUE_LOG.md)
+- [`docs/README.md`](./docs/README.md) — documentation map and file-purpose guide
+- [`docs/architecture/system-overview.md`](./docs/architecture/system-overview.md) — high-level system design, module boundaries, and data model
+- [`docs/architecture/reader-internals.md`](./docs/architecture/reader-internals.md) — reader loading, rendering, caching, and network behavior
+- [`docs/status/release-gates.md`](./docs/status/release-gates.md) — current phase status and latest consolidated verification summary
+- [`docs/operations/legacy-migration.md`](./docs/operations/legacy-migration.md) — legacy import plan, compatibility rules, and safety checks
+- [`docs/reference/performance-budgets.md`](./docs/reference/performance-budgets.md) — acceptance budgets and tuning guardrails
+- [`docs/troubleshooting/resolved-issue-history.md`](./docs/troubleshooting/resolved-issue-history.md) — resolved issue history and debugging context
+- [`ios-wrapper/README.md`](./ios-wrapper/README.md) — optional native iPad wrapper setup and behavior notes
+
+Dated validation snapshots now live under [`docs/archive/`](./docs/archive/).
 
 ## Local Development
 
@@ -226,7 +229,7 @@ Keep in GitHub:
 
 - application source under `client/`, `server/`, and `shared/`
 - deployment files like `Dockerfile`, compose files, and the GHCR workflow
-- operator docs such as `README.md`, `ARCHITECTURE.md`, and migration notes
+- operator docs such as `README.md`, `docs/`, and subsystem READMEs like `ios-wrapper/README.md`
 
 Keep local only:
 

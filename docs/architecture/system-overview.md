@@ -1,5 +1,8 @@
 # Inkflow Architecture
 
+For the documentation map, see [`../README.md`](../README.md).
+For reader-level implementation details, see [`reader-internals.md`](./reader-internals.md).
+
 ## Phase 0 Status
 
 This document is the design contract for a clean rebuild of Inkflow in this repository.
@@ -129,10 +132,14 @@ Current repository layout:
       contracts.ts       # shared DTOs and type contracts
   scripts/
   data/                  # runtime-only in local dev, bind-mounted in Docker
+  docs/
+    architecture/
+    operations/
+    reference/
+    status/
+    troubleshooting/
+    archive/
   README.md
-  INTERNALS.md
-  PERFORMANCE_BUDGETS.md
-  ARCHITECTURE.md
 ```
 
 Tests live alongside source as `*.test.ts` rather than in one top-level `tests/` directory.
