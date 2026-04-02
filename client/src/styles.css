@@ -1997,9 +1997,13 @@ img {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Lock scroll during active ink drawing to prevent accidental pan */
+/* Lock scroll during active ink drawing to prevent accidental pan.
+   Avoid toggling overflow — on iOS, switching from auto to hidden disrupts
+   the -webkit-overflow-scrolling compositor layer, causing a small visual
+   shift of page content while the pencil is active. Instead, disable touch
+   panning and rely on the JS scroll-restore fallback in handleScroll(). */
 .reader-scroll.ink-scroll-locked {
-  overflow: hidden;
+  touch-action: none;
   overscroll-behavior: none;
 }
 
