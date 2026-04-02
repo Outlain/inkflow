@@ -268,6 +268,70 @@ Important design choices:
 
 ## Saving and Sync
 
+### Annotation Hot Path
+
+The annotation pipeline has two distinct phases and they must stay separate:
+
+1. Active inking
+2. Post-stroke durability work
+
+The freeze fixed in this branch came from violating that boundary. Page-size-dependent work was allowed to run too close to the Pencil input path, so the browser eventually built up a main-thread backlog and stopped showing new strokes for about 1-2 seconds while it caught up.
+
+#### Active Inking
+
+While the Pencil is down:
+
+- `PageShell` accumulates raw/coalesced pointer points at full rate.
+- Stroke smoothing still runs for the active stroke.
+- The visible stroke preview is rendered from a dedicated preview stroke layer.
+- Committed page annotations are not rebuilt just to show the active stroke.
+- Active-page client thumbnail redraws are suppressed.
+- Save draining and IndexedDB draft persistence are deferred.
+
+This keeps the hot path bounded to "new points plus one preview stroke" rather than "all prior strokes on the page plus background save work."
+
+#### Post-Stroke Commit
+
+After pointer-up:
+
+- `ReaderView` appends the committed stroke optimistically to page-local state.
+- Append saves are queued and merged where possible.
+- Draft persistence is queued separately from network save draining.
+- Background work waits for a short idle window before flushing.
+
+The important rule is that post-stroke durability work may lag slightly, but it must not compete with active ink input.
+
+#### Known Cost Centers
+
+The following operations scale with page complexity and were the main sources of the freeze:
+
+- rebuilding committed SVG path strings for previously finished strokes
+- redrawing active-page thumbnails from local annotations
+- writing full-page draft snapshots into IndexedDB
+- parsing, merging, and rewriting full `annotations_json` on the server
+
+Current mitigations in the implementation:
+
+- committed stroke render data is cached page-locally
+- thumbnail redraws use thumbnail-sized canvases, not full-page-sized canvases
+- append saves and draft writes are batched
+- plain ink appends do not rebuild annotation text
+- server-side search reindexing is skipped when `annotation_text` did not change
+
+#### Current Limitation
+
+The current design is much better behaved under Apple Pencil input, but the storage model is still page-snapshot-oriented:
+
+- client state is still page-level
+- undo history is still page-snapshot-oriented
+- server persistence still rewrites page-level `annotations_json`
+
+That means extremely dense pages can still hit scaling limits. The next major architecture step, if needed, is:
+
+- rasterize committed ink onto a canvas layer
+- keep SVG/DOM only for active/editable overlays
+- move from full-page snapshot persistence toward chunked or operation-based ink storage
+
 ### Local-First
 
 - Page-local working state is authoritative for live writing.

@@ -29,6 +29,13 @@ Implemented in this repository today:
 - Annotated PDF export
 - Optional iPad `WKWebView` wrapper scaffold for Apple Pencil Pro squeeze, launch-screen-correct viewport sizing, and LAN-hosted local testing
 
+Recent annotation performance work:
+
+- live pen/pencil/highlighter preview is isolated from committed page annotations
+- append saves and IndexedDB draft writes are batched instead of firing per stroke
+- active-page thumbnails are deferred while inking and redraw at thumbnail resolution
+- pure ink appends avoid unnecessary page-text rescans and server search reindexing
+
 Fresh large-PDF workflow validation now passes on the current build, including import, search, preview, bookmark, save, blank insert, PDF insert, and export on a 1620-page / 191 MB physics PDF.
 
 Physical iPad Safari + Apple Pencil QA is still required for the strict release gates around scroll feel, rapid dots/pen lifts, and compact-toolbar ergonomics.
@@ -308,6 +315,24 @@ npm run import-legacy -- --source-db /path/old.db --source-uploads /path/old/upl
 - The reader depends on stored page dimensions. Avoid editing those values manually.
 - Search and preview generation are intentionally server-side for large imported PDFs.
 - The main reader uses full-size shells only. Thumbnails and previews are separate on purpose.
+
+### Annotation Performance Notes
+
+The main annotation freeze that showed up on iPad was not a single server or cache limit. It was a client backlog problem caused by several page-size-dependent tasks stacking together after each stroke:
+
+- live preview work was previously coupled to the committed annotation list
+- committed strokes forced repeated SVG path regeneration as the page got denser
+- the active-page thumbnail could redraw locally while the user was still writing
+- IndexedDB draft writes and save draining could wake up between rapid strokes
+
+The current pipeline is designed to keep active inking ahead of background durability work:
+
+- live inking draws into a dedicated preview stroke layer
+- committed stroke path data is cached
+- active-page thumbnail redraws are deferred during inking and render at thumbnail size
+- append saves and draft persistence wait for a short idle window before flushing
+
+If very dense pages still hit a hard limit in the future, the next architectural step is to move committed ink off large live SVG trees and onto a rasterized canvas layer, then eventually move from full-page JSON snapshots toward chunked ink storage.
 
 ## Large-PDF Validation Used During Development
 

@@ -132,6 +132,8 @@
   let activePointerId: number | null = null;
   let activePoints: PagePoint[] = [];
   let previewAnnotations: PageAnnotation[] | null = null;
+  let previewStroke: StrokeAnnotation | null = null;
+  let previewRafId = 0;
   let selectedShapeId = '';
   let selectedShape: ShapeAnnotation | null = null;
   let renderSuspended = false;
@@ -155,6 +157,8 @@
   let tapePeekTapeId: string | null = null;
   let tapePeekStartTime = 0;
   const TAPE_PEEK_HOLD_THRESHOLD = 200; // ms — longer than this = hold-to-peek, shorter = toggle
+  const strokePathCache = new WeakMap<StrokeAnnotation, { scale: number; path: string }>();
+  const pencilLayerCache = new WeakMap<StrokeAnnotation, Array<{ multiplier: number; opacity: number }>>();
   let moveGesture:
     | null
     | {
@@ -213,6 +217,50 @@
     return stabilizeStrokePoints(activePoints, strokeStabilization);
   }
 
+  // ── Frame-rate throttled preview ──────────────────────────────────────
+  // pointerrawupdate fires at 100-240 Hz on Apple Pencil but the display
+  // only refreshes at 60-120 Hz.  Points accumulate at full rate (via
+  // continueStroke) while the expensive work — spreading the annotations
+  // array, running stabilisation, and triggering Svelte's keyed-each
+  // diff — is batched to once per animation frame.
+
+  function flushStrokePreview(): void {
+    previewRafId = 0;
+    if (activePointerId === null) {
+      return;
+    }
+
+    if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
+      const strokePoints = currentStrokePoints();
+      previewStroke = createStroke({
+        id: 'preview-stroke',
+        tool,
+        color,
+        width: currentStrokeWidth(),
+        points: strokePoints
+      });
+    }
+  }
+
+  function scheduleStrokePreview(): void {
+    if (previewRafId !== 0) {
+      return;
+    }
+    previewRafId = requestAnimationFrame(flushStrokePreview);
+  }
+
+  function cancelStrokePreview(): void {
+    if (previewRafId !== 0) {
+      cancelAnimationFrame(previewRafId);
+      previewRafId = 0;
+    }
+  }
+
+  function clearStrokePreview(): void {
+    cancelStrokePreview();
+    previewStroke = null;
+  }
+
   function averagePressure(points: PagePoint[]): number {
     if (points.length === 0) {
       return 0.5;
@@ -230,6 +278,28 @@
       { multiplier: 1.05, opacity: baseOpacity * 0.6 },
       { multiplier: 0.88, opacity: baseOpacity }
     ];
+  }
+
+  function cachedStrokePath(annotation: StrokeAnnotation): string {
+    const cached = strokePathCache.get(annotation);
+    if (cached && cached.scale === layout.scale) {
+      return cached.path;
+    }
+
+    const path = strokePath(annotation.points, layout.scale);
+    strokePathCache.set(annotation, { scale: layout.scale, path });
+    return path;
+  }
+
+  function cachedPencilStrokeLayers(annotation: StrokeAnnotation): Array<{ multiplier: number; opacity: number }> {
+    const cached = pencilLayerCache.get(annotation);
+    if (cached) {
+      return cached;
+    }
+
+    const layers = pencilStrokeLayers(annotation);
+    pencilLayerCache.set(annotation, layers);
+    return layers;
   }
 
   function lineStyle(annotation: ShapeAnnotation): string {
@@ -294,6 +364,7 @@
   function beginStroke(event: PointerEvent): void {
     activePointerId = event.pointerId;
     activePoints = [];
+    previewStroke = null;
     appendPoints(pageCoordinates(event));
   }
 
@@ -340,6 +411,7 @@
 
     if (activePoints.length === 0) {
       activePointerId = null;
+      clearStrokePreview();
       previewAnnotations = null;
       clearEraserIndicator();
       setInkSession(false);
@@ -355,6 +427,7 @@
         width: currentStrokeWidth(),
         points: strokePoints
       });
+      previewStroke = null;
       onAppend(layout.page.id, [stroke]);
     }
 
@@ -397,6 +470,7 @@
 
     activePointerId = null;
     activePoints = [];
+    clearStrokePreview();
     previewAnnotations = null;
     shapeGesture = null;
     clearEraserIndicator();
@@ -406,6 +480,7 @@
   function clearPointerState(): void {
     activePointerId = null;
     activePoints = [];
+    clearStrokePreview();
     previewAnnotations = null;
     moveGesture = null;
     shapeGesture = null;
@@ -996,17 +1071,7 @@
     }
 
     if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
-      const strokePoints = currentStrokePoints();
-      previewAnnotations = [
-        ...annotations,
-        createStroke({
-          id: 'preview-stroke',
-          tool,
-          color,
-          width: currentStrokeWidth(),
-          points: strokePoints
-        })
-      ];
+      scheduleStrokePreview();
     }
   }
 
@@ -1031,17 +1096,9 @@
     continueStroke(event);
 
     if (tool === 'pen' || tool === 'pencil' || tool === 'highlighter') {
-      const strokePoints = currentStrokePoints();
-      previewAnnotations = [
-        ...annotations,
-        createStroke({
-          id: 'preview-stroke',
-          tool,
-          color,
-          width: currentStrokeWidth(),
-          points: strokePoints
-        })
-      ];
+      // Points already accumulated at full rate by continueStroke().
+      // Defer the expensive array spread + Svelte diff to the next frame.
+      scheduleStrokePreview();
     }
 
     if (tool === 'laser') {
@@ -1764,6 +1821,7 @@
     interactionLayer?.removeEventListener('touchcancel', handleStylusTouch);
     cancelRender(layout.page.id);
     cancelSegmentRenders();
+    clearStrokePreview();
     setInkSession(false);
     renderToken += 1;
     if (previewDeferTimer) { clearTimeout(previewDeferTimer); previewDeferTimer = null; }
@@ -1773,7 +1831,7 @@
   // ── Reactive declarations ──
 
   $: displayAnnotations = previewAnnotations ?? annotations;
-  $: onPreviewAnnotationsChange(layout.page.id, moveGesture ? null : previewAnnotations);
+  $: onPreviewAnnotationsChange(layout.page.id, activePointerId === null && !moveGesture ? previewAnnotations : null);
   $: selectedShape =
     displayAnnotations.find(
       (annotation): annotation is ShapeAnnotation => annotation.type === 'shape' && annotation.id === selectedShapeId
@@ -1957,9 +2015,9 @@
       {#each displayAnnotations as annotation (annotation.id)}
         {#if annotation.type === 'stroke'}
           {#if annotation.tool === 'pencil'}
-            {#each pencilStrokeLayers(annotation) as layer}
+            {#each cachedPencilStrokeLayers(annotation) as layer}
               <path
-                d={strokePath(annotation.points, layout.scale)}
+                d={cachedStrokePath(annotation)}
                 fill="none"
                 stroke={annotation.color}
                 stroke-linecap="round"
@@ -1970,7 +2028,7 @@
             {/each}
           {:else}
             <path
-              d={strokePath(annotation.points, layout.scale)}
+              d={cachedStrokePath(annotation)}
               fill="none"
               stroke={annotation.color}
               stroke-linecap="round"
@@ -2083,6 +2141,32 @@
           ></path>
         {/if}
       {/each}
+
+      {#if previewStroke}
+        {#if previewStroke.tool === 'pencil'}
+          {#each pencilStrokeLayers(previewStroke) as layer}
+            <path
+              d={strokePath(previewStroke.points, layout.scale)}
+              fill="none"
+              stroke={previewStroke.color}
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-opacity={layer.opacity}
+              stroke-width={scaledWidth(previewStroke.width * layer.multiplier)}
+            ></path>
+          {/each}
+        {:else}
+          <path
+            d={strokePath(previewStroke.points, layout.scale)}
+            fill="none"
+            stroke={previewStroke.color}
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-opacity={previewStroke.tool === 'highlighter' ? 0.33 : 1}
+            stroke-width={scaledWidth(previewStroke.width)}
+          ></path>
+        {/if}
+      {/if}
 
       {#each displayAnnotations.filter((annotation) => selectedAnnotationIds.includes(annotation.id)) as annotation (annotation.id)}
         {#key `${annotation.id}:selection`}

@@ -66,6 +66,9 @@ Secondary stress asset:
 - No input event loss caused by save or render queue contention.
 - No finger-scroll lockout while stylus-only writing is enabled.
 - No unexpected browser text selection or callout artifacts on the writing surface.
+- Active inking must not trigger active-page thumbnail redraws.
+- Active inking must not wait on IndexedDB draft writes or network save draining.
+- Per-stroke commit cost must not grow from re-rendering previously finished stroke geometry.
 
 ### Phase 5
 
@@ -102,9 +105,20 @@ Preferred for very large textbook workloads:
 - Smoothness wins over aggressive precomputation.
 - Blank fixed-size shells are preferred over unstable preview swaps.
 - Background work must be cancelable.
+- During active Pencil input, background durability work should defer to input responsiveness.
 - Range requests and linearized PDFs are preferred for large imports and random access.
 - Thumbnail and full-page rendering stay on separate queues.
 - Search is server-side for large documents.
+
+## Annotation Performance Rules
+
+These are the working rules that came out of the iPad annotation freeze investigation:
+
+- The active stroke preview must be isolated from the committed annotation scene.
+- Active-page client thumbnails should redraw only after an ink idle window.
+- Append saves and draft persistence should batch several strokes when possible.
+- Pure ink appends should avoid text/index recomputation.
+- Large-page performance issues should be treated first as client main-thread backlog problems, not as server-only latency.
 
 ## Runtime Tuning
 

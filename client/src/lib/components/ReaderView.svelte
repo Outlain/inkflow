@@ -180,7 +180,10 @@
   const DEFAULT_MARKER_COLOR = colorChips[4];
   const QUICK_PENCIL_STABILIZATION = 18;
   const QUICK_MARKER_STABILIZATION = 24;
+  const APPEND_SAVE_DEBOUNCE_MS = 120;
   const REPLACE_SAVE_DEBOUNCE_MS = 120;
+  const DRAFT_PERSIST_DEBOUNCE_MS = 400;
+  const INK_IDLE_FLUSH_MS = 1500;
   const PENCIL_SQUEEZE_LONG_PRESS_MS = 420;
   const PENCIL_SQUEEZE_MENU_WIDTH = 240;
   const PENCIL_SQUEEZE_ARC_SHELL_WIDTH = 240;
@@ -316,6 +319,9 @@
   const pendingSaves = new Map<string, SaveItem[]>();
   const drainingPages = new Set<string>();
   const saveDrainTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const draftPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const draftPersistPending = new Set<string>();
+  const draftPersistingPages = new Set<string>();
 
   // Scroll & gesture tracking
   let scrollFrame = 0;
@@ -382,7 +388,10 @@
   let qualityUnsub: (() => void) | null = null;
   let thumbnailSidebarPages: DocumentBundle['pages'] = [];
   let previewAnnotationsByPage: Record<string, PageAnnotation[] | null> = {};
-  let thumbnailRenderVersionByPage: Record<string, number> = {};
+  let inkInputActive = false;
+  let inkInputPageId: string | null = null;
+  let inkCoolingPageId: string | null = null;
+  let inkIdleFlushTimer = 0;
   let connectionQuality: ConnectionQuality = getConnectionQuality();
   let networkConfig: NetworkConfig = getNetworkConfig();
 
@@ -1610,11 +1619,15 @@
     return compactMode ? Math.min(120, maxWidth) : Math.min(240, maxWidth);
   }
 
-  function thumbnailAnnotations(pageId: string): PageAnnotation[] {
-    return (previewAnnotationsByPage[pageId] ?? pageStates[pageId]?.annotations ?? []) as PageAnnotation[];
+  function thumbnailDeferredForInk(pageId: string): boolean {
+    return pageId === inkInputPageId || pageId === inkCoolingPageId;
   }
 
   function useClientThumbnail(pageId: string): boolean {
+    if (thumbnailDeferredForInk(pageId)) {
+      return false;
+    }
+
     const state = pageStates[pageId];
     return Boolean(previewAnnotationsByPage[pageId] || state?.dirty || state?.loaded);
   }
@@ -1638,16 +1651,6 @@
       ...previewAnnotationsByPage,
       [pageId]: annotations
     };
-    thumbnailRenderVersionByPage = {
-      ...thumbnailRenderVersionByPage,
-      [pageId]: (thumbnailRenderVersionByPage[pageId] ?? 0) + 1
-    };
-  }
-
-  function thumbnailRenderKey(pageId: string): string {
-    const state = pageStates[pageId];
-    const previewVersion = thumbnailRenderVersionByPage[pageId] ?? 0;
-    return `${pageId}:${state?.localChangeCounter ?? 0}:${state?.annotationRevision ?? 0}:${previewVersion}`;
   }
 
   function thumbnailKindLabel(page: DocumentBundle['pages'][number]): string {
@@ -1852,6 +1855,114 @@
     }
   }
 
+  function clearInkIdleFlushTimer(): void {
+    if (inkIdleFlushTimer) {
+      window.clearTimeout(inkIdleFlushTimer);
+      inkIdleFlushTimer = 0;
+    }
+  }
+
+  function flushPendingSaveDrains(force = false): void {
+    for (const [pageId, queue] of pendingSaves) {
+      if ((queue?.length ?? 0) > 0) {
+        void drainSaves(pageId, force);
+      }
+    }
+  }
+
+  async function flushDraftPersist(pageId: string, force = false): Promise<void> {
+    const pendingTimer = draftPersistTimers.get(pageId);
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      draftPersistTimers.delete(pageId);
+    }
+
+    if (!force && (inkInputActive || inkCoolingPageId === pageId)) {
+      scheduleInkIdleFlush();
+      return;
+    }
+
+    if (draftPersistingPages.has(pageId)) {
+      return;
+    }
+
+    draftPersistingPages.add(pageId);
+
+    try {
+      while (draftPersistPending.has(pageId)) {
+        draftPersistPending.delete(pageId);
+        await persistDraft(pageId);
+      }
+    } finally {
+      draftPersistingPages.delete(pageId);
+    }
+  }
+
+  function scheduleDraftPersist(pageId: string, delayMs = DRAFT_PERSIST_DEBOUNCE_MS): void {
+    draftPersistPending.add(pageId);
+
+    const pendingTimer = draftPersistTimers.get(pageId);
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      draftPersistTimers.delete(pageId);
+    }
+
+    if (delayMs <= 0) {
+      void flushDraftPersist(pageId);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      draftPersistTimers.delete(pageId);
+      void flushDraftPersist(pageId);
+    }, delayMs);
+    draftPersistTimers.set(pageId, timer);
+  }
+
+  function flushPendingDraftPersists(force = false): void {
+    for (const pageId of draftPersistPending) {
+      void flushDraftPersist(pageId, force);
+    }
+  }
+
+  function flushPendingInkWork(force = false): void {
+    clearInkIdleFlushTimer();
+    if (force) {
+      inkInputActive = false;
+      inkInputPageId = null;
+    }
+    inkCoolingPageId = null;
+    flushPendingDraftPersists(force);
+    flushPendingSaveDrains(force);
+  }
+
+  function scheduleInkIdleFlush(delayMs = INK_IDLE_FLUSH_MS): void {
+    clearInkIdleFlushTimer();
+
+    if (delayMs <= 0) {
+      flushPendingInkWork();
+      return;
+    }
+
+    inkIdleFlushTimer = window.setTimeout(() => {
+      inkIdleFlushTimer = 0;
+      if (inkInputActive) {
+        return;
+      }
+      flushPendingInkWork();
+    }, delayMs);
+  }
+
+  function handleVisibilityChange(): void {
+    if (document.visibilityState === 'hidden') {
+      flushPendingInkWork(true);
+    }
+  }
+
+  function handlePageHide(): void {
+    flushPendingInkWork(true);
+  }
+
   /** Fetch annotations from server, merge with local draft if newer */
   async function loadPageState(pageId: string, force = false): Promise<void> {
     const state = ensurePageState(pageId);
@@ -1976,8 +2087,13 @@
   }
 
   /** Process queued saves for a page sequentially, stopping on error */
-  async function drainSaves(pageId: string): Promise<void> {
+  async function drainSaves(pageId: string, force = false): Promise<void> {
     if (drainingPages.has(pageId) || !bundle) {
+      return;
+    }
+
+    if (!force && (inkInputActive || inkCoolingPageId === pageId)) {
+      scheduleInkIdleFlush();
       return;
     }
 
@@ -1992,12 +2108,25 @@
     try {
       while ((pendingSaves.get(pageId)?.length ?? 0) > 0) {
         const queue = pendingSaves.get(pageId) ?? [];
-        const item = queue.shift();
-        pendingSaves.set(pageId, queue);
-
+        let item = queue.shift();
         if (!item) {
+          pendingSaves.set(pageId, queue);
           continue;
         }
+
+        // Merge consecutive append items into a single save request so rapid
+        // strokes don't each trigger their own network round-trip + setPageState.
+        if (item.mode === 'append') {
+          while (queue.length > 0 && queue[0].mode === 'append') {
+            const next = queue.shift()!;
+            item = {
+              mode: 'append',
+              annotations: [...item.annotations, ...next.annotations],
+              annotationText: next.annotationText
+            };
+          }
+        }
+        pendingSaves.set(pageId, queue);
 
         const current = ensurePageState(pageId);
         setPageState(pageId, {
@@ -2029,7 +2158,7 @@
             dirty: (pendingSaves.get(pageId)?.length ?? 0) > 0
           };
           setPageState(pageId, nextState);
-          void persistDraft(pageId);
+          scheduleDraftPersist(pageId);
           debugTimeline.log('save-end', `${item.mode} save finished for ${pageId}`);
           logStudyEvent('page.edited', documentId, pageId, { mode: item.mode, strokeCount: item.annotations.length });
         } catch (error) {
@@ -2042,7 +2171,7 @@
             dirty: true
           });
           pendingSaves.set(pageId, []);
-          void persistDraft(pageId);
+          scheduleDraftPersist(pageId);
           debugTimeline.log('save-end', `${item.mode} save failed for ${pageId}: ${message}`);
           break;
         }
@@ -2079,10 +2208,10 @@
     } else {
       queue.push(item);
       pendingSaves.set(pageId, queue);
-      scheduleSaveDrain(pageId, 0);
+      scheduleSaveDrain(pageId, APPEND_SAVE_DEBOUNCE_MS);
     }
 
-    void persistDraft(pageId);
+    scheduleDraftPersist(pageId);
   }
 
   // ── Annotation Mutation (called by PageShell) ──────────────────────────
@@ -2094,7 +2223,9 @@
     const nextState: PageRuntimeState = {
       ...state,
       annotations: nextAnnotations,
-      annotationText: annotationTextFromAnnotations(nextAnnotations),
+      // Ink/tape appends do not change searchable text, so avoid rescanning
+      // the full page annotation list on every stroke commit.
+      annotationText: state.annotationText,
       dirty: true,
       saveError: '',
       localChangeCounter: state.localChangeCounter + 1,
@@ -2425,6 +2556,25 @@
       debugTimeline.log('ink-lock', `Released scroll lock for page ${activePageIndex + 1}`);
     }
     inkScrollLocked = false;
+  }
+
+  function handleInkSessionChange(pageId: string, active: boolean): void {
+    setInkScrollLock(active);
+
+    if (active) {
+      inkInputActive = true;
+      inkInputPageId = pageId;
+      inkCoolingPageId = pageId;
+      clearInkIdleFlushTimer();
+      return;
+    }
+
+    inkInputActive = false;
+    if (inkInputPageId === pageId) {
+      inkInputPageId = null;
+    }
+    inkCoolingPageId = pageId;
+    scheduleInkIdleFlush();
   }
 
   function restoreInkScrollPosition(): void {
@@ -2781,6 +2931,8 @@
     window.addEventListener('pointermove', handleWindowPointerMove, { passive: false });
     window.addEventListener('pointerup', endRulerGesture);
     window.addEventListener('pointercancel', endRulerGesture);
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.addEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
     strokePresetSettings = loadStrokePresetSettings();
@@ -2826,18 +2978,25 @@
     window.removeEventListener('pointermove', handleWindowPointerMove);
     window.removeEventListener('pointerup', endRulerGesture);
     window.removeEventListener('pointercancel', endRulerGesture);
+    window.removeEventListener('pagehide', handlePageHide);
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
     window.removeEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.removeEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
     cancelAnimationFrame(resizeFrame);
     cancelAnimationFrame(windowResizeFrame);
     cancelAnimationFrame(scrollFrame);
     cancelAnimationFrame(pinchFrame);
+    clearInkIdleFlushTimer();
     window.clearTimeout(scrollEndTimer);
     window.clearInterval(timeKeeperTimer);
     for (const timer of saveDrainTimers.values()) {
       window.clearTimeout(timer);
     }
     saveDrainTimers.clear();
+    for (const timer of draftPersistTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    draftPersistTimers.clear();
     cancelLongPress();
     cancelPencilSqueezeLongPress();
     syncSocket?.close();
@@ -3498,6 +3657,7 @@
                       annotations={previewAnnotationsByPage[page.id] ?? pageStates[page.id]?.annotations ?? []}
                       page={page}
                       previewSrc={thumbnailBaseSrc(page.id)}
+                      renderWidth={thumbnailPreviewWidth()}
                       serverSrc={thumbnailServerSrc(page.id)}
                       useClient={!!(previewAnnotationsByPage[page.id] || pageStates[page.id]?.dirty || pageStates[page.id]?.loaded)}
                     />
@@ -3852,7 +4012,7 @@
                 shapeKind={selectedShapeKind}
                 shapeFill={selectedShapeFill}
                 shapeLineStyle={selectedShapeLineStyle}
-                onPenSessionChange={setInkScrollLock}
+                onPenSessionChange={(active) => handleInkSessionChange(pageLayout.page.id, active)}
                 onAppend={appendAnnotations}
                 onMoveSelection={moveSelectedAnnotations}
                 onReplace={replaceAnnotations}

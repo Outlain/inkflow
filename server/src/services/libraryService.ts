@@ -541,6 +541,7 @@ export function savePageAnnotations(input: SavePageRequest): SavePageResponse {
 
     let nextAnnotations = input.annotations;
     let mode: SaveMode = input.mode;
+    const shouldReindexSearch = input.annotationText !== page.annotation_text;
 
     if (input.mode === 'append') {
       // Deduplicate: only add annotations the server hasn't seen yet
@@ -579,12 +580,14 @@ export function savePageAnnotations(input: SavePageRequest): SavePageResponse {
       timestamp
     );
 
-    reindexPageSearch(db, {
-      id: page.id,
-      document_id: page.document_id,
-      base_text: page.base_text,
-      annotation_text: input.annotationText
-    });
+    if (shouldReindexSearch) {
+      reindexPageSearch(db, {
+        id: page.id,
+        document_id: page.document_id,
+        base_text: page.base_text,
+        annotation_text: input.annotationText
+      });
+    }
 
     db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(timestamp, page.document_id);
 

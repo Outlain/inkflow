@@ -16,9 +16,13 @@
   export let previewSrc = '';
   export let serverSrc = '';
   export let alt = '';
+  export let renderWidth = 240;
 
   let canvas: HTMLCanvasElement | null = null;
   let renderToken = 0;
+  const strokePathCache = new WeakMap<StrokeAnnotation, Path2D>();
+  const shapePathCache = new WeakMap<ShapeAnnotation, Path2D>();
+  const pencilLayerCache = new WeakMap<StrokeAnnotation, Array<{ multiplier: number; opacity: number }>>();
 
   function loadImage(src: string): Promise<HTMLImageElement> {
     const cached = imageCache.get(src);
@@ -67,6 +71,39 @@
       { multiplier: 1.05, opacity: baseOpacity * 0.6 },
       { multiplier: 0.88, opacity: baseOpacity }
     ];
+  }
+
+  function cachedStrokePath(annotation: StrokeAnnotation): Path2D {
+    const cached = strokePathCache.get(annotation);
+    if (cached) {
+      return cached;
+    }
+
+    const path = new Path2D(strokePath(annotation.points, 1));
+    strokePathCache.set(annotation, path);
+    return path;
+  }
+
+  function cachedShapePath(annotation: ShapeAnnotation): Path2D {
+    const cached = shapePathCache.get(annotation);
+    if (cached) {
+      return cached;
+    }
+
+    const path = new Path2D(shapePath(annotation, 1));
+    shapePathCache.set(annotation, path);
+    return path;
+  }
+
+  function cachedPencilStrokeLayers(annotation: StrokeAnnotation): Array<{ multiplier: number; opacity: number }> {
+    const cached = pencilLayerCache.get(annotation);
+    if (cached) {
+      return cached;
+    }
+
+    const layers = pencilStrokeLayers(annotation);
+    pencilLayerCache.set(annotation, layers);
+    return layers;
   }
 
   function lineDash(annotation: ShapeAnnotation): number[] {
@@ -148,7 +185,7 @@
       return;
     }
 
-    const path = new Path2D(shapePath(annotation, 1));
+    const path = cachedShapePath(annotation);
     context.beginPath();
     context.stroke(path);
     if (annotation.fill) {
@@ -165,10 +202,10 @@
 
     for (const annotation of annotations) {
       if (annotation.type === 'stroke') {
-        const path = new Path2D(strokePath(annotation.points, 1));
+        const path = cachedStrokePath(annotation);
 
         if (annotation.tool === 'pencil') {
-          for (const layer of pencilStrokeLayers(annotation)) {
+          for (const layer of cachedPencilStrokeLayers(annotation)) {
             context.save();
             context.strokeStyle = annotation.color;
             context.globalAlpha = layer.opacity;
@@ -245,7 +282,7 @@
         }
         context.stroke();
       } else {
-        const path = new Path2D(shapePath(annotation, 1));
+        const path = cachedShapePath(annotation);
         if (annotation.fill) {
           context.globalAlpha = 0.16;
           context.fill(path);
@@ -268,10 +305,14 @@
       return;
     }
 
-    canvas.width = Math.max(1, Math.round(page.width));
-    canvas.height = Math.max(1, Math.round(page.height));
+    const width = Math.max(1, Math.round(renderWidth));
+    const height = Math.max(1, Math.round((width * page.height) / Math.max(page.width, 1)));
+    canvas.width = width;
+    canvas.height = height;
 
+    context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
+    context.setTransform(width / Math.max(page.width, 1), 0, 0, height / Math.max(page.height, 1), 0, 0);
 
     if (page.kind === 'pdf') {
       try {
@@ -300,7 +341,7 @@
   // reactive dependencies — without this, Svelte only sees `useClient` and `canvas`
   // and never redraws when new annotation data is passed in.
   $: if (useClient && canvas) {
-    void (annotations, previewSrc, redrawClientThumbnail());
+    void (annotations, previewSrc, renderWidth, redrawClientThumbnail());
   }
 </script>
 
