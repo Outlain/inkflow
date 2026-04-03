@@ -226,15 +226,17 @@
     };
   }
 
-  const pencilSqueezeArcItems: PencilSqueezeArcItem[] = [
+  /* Pinned top (arc index 0-1), scrollable middle (2-6), pinned bottom (7). */
+  const pencilSqueezeTopItems: PencilSqueezeArcItem[] = [
     { kind: 'action', id: 'customize', label: 'Customize tool', glyph: '≡' },
-    { kind: 'action', id: 'colors', label: 'Colors', glyph: '●' },
+    { kind: 'action', id: 'colors', label: 'Colors', glyph: '●' }
+  ];
+  const pencilSqueezeScrollItems: PencilSqueezeArcItem[] = [
     pencilSqueezeToolItem('pen'),
     pencilSqueezeToolItem('pencil'),
     pencilSqueezeToolItem('eraser'),
     pencilSqueezeToolItem('highlighter'),
     pencilSqueezeToolItem('shape'),
-    { kind: 'action', id: 'undo', label: 'Undo', glyph: '↺' },
     pencilSqueezeToolItem('lasso'),
     pencilSqueezeToolItem('text'),
     pencilSqueezeToolItem('hand'),
@@ -242,6 +244,10 @@
     pencilSqueezeToolItem('tape'),
     pencilSqueezeToolItem('laser')
   ];
+  const pencilSqueezeBottomItems: PencilSqueezeArcItem[] = [
+    { kind: 'action', id: 'undo', label: 'Undo', glyph: '↺' }
+  ];
+  const PENCIL_SQUEEZE_SCROLL_VISIBLE = PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS - pencilSqueezeTopItems.length - pencilSqueezeBottomItems.length;
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
   const clientId = createClientId();
 
@@ -354,9 +360,11 @@
   let pencilSqueezeMenuTop = 0;
   let pencilSqueezeMenuSide: PencilSqueezeMenuSide = 'left';
   let pencilSqueezeMenuEl: HTMLDivElement | null = null;
-  let pencilSqueezeArcScroll: HTMLDivElement | null = null;
   let pencilSqueezeArcWindowStart = 0;
   let pencilSqueezePressTimer = 0;
+  let pencilSqueezeSwipePointerId = -1;
+  let pencilSqueezeSwipeStartY = 0;
+  let pencilSqueezeSwipeSwiped = false;
   let suppressedPencilSqueezeClickKey = '';
   let compactHeaderShown = false;
   let compactHeaderVisibleState = false;
@@ -636,41 +644,51 @@
   }
 
   function maxPencilSqueezeArcWindowStart(): number {
-    return Math.max(0, pencilSqueezeArcItems.length - PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS);
+    return Math.max(0, pencilSqueezeScrollItems.length - PENCIL_SQUEEZE_SCROLL_VISIBLE);
   }
 
-  function visiblePencilSqueezeArcItems(): PencilSqueezeArcItem[] {
-    return pencilSqueezeArcItems.slice(
-      pencilSqueezeArcWindowStart,
-      pencilSqueezeArcWindowStart + PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS
-    );
+  let pencilSqueezeVisibleItems: PencilSqueezeArcItem[] = [];
+  $: pencilSqueezeVisibleItems = [
+    ...pencilSqueezeTopItems,
+    ...pencilSqueezeScrollItems.slice(pencilSqueezeArcWindowStart, pencilSqueezeArcWindowStart + PENCIL_SQUEEZE_SCROLL_VISIBLE),
+    ...pencilSqueezeBottomItems
+  ];
+
+  const PENCIL_SQUEEZE_SWIPE_THRESHOLD = 30;
+
+  function handleSqueezeRailPointerDown(event: PointerEvent): void {
+    pencilSqueezeSwipePointerId = event.pointerId;
+    pencilSqueezeSwipeStartY = event.clientY;
+    pencilSqueezeSwipeSwiped = false;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }
 
-  function syncPencilSqueezeArcWindowFromScroll(): void {
-    if (!pencilSqueezeArcScroll) {
-      return;
+  function handleSqueezeRailPointerMove(event: PointerEvent): void {
+    if (event.pointerId !== pencilSqueezeSwipePointerId) return;
+    const dy = event.clientY - pencilSqueezeSwipeStartY;
+    if (Math.abs(dy) >= PENCIL_SQUEEZE_SWIPE_THRESHOLD) {
+      // Positive dy = finger moved down = scroll up (show earlier tools)
+      scrollPencilSqueezeArc(dy > 0 ? -1 : 1);
+      pencilSqueezeSwipeStartY = event.clientY;
+      pencilSqueezeSwipeSwiped = true;
     }
+  }
 
-    const nextWindowStart = clamp(
-      Math.round(pencilSqueezeArcScroll.scrollTop / PENCIL_SQUEEZE_ARC_SLOT_PITCH),
+  function handleSqueezeRailPointerUp(event: PointerEvent): void {
+    if (event.pointerId !== pencilSqueezeSwipePointerId) return;
+    pencilSqueezeSwipePointerId = -1;
+  }
+
+  function scrollPencilSqueezeArc(direction: 1 | -1): void {
+    pencilSqueezeArcWindowStart = clamp(
+      pencilSqueezeArcWindowStart + direction,
       0,
       maxPencilSqueezeArcWindowStart()
     );
-
-    if (nextWindowStart !== pencilSqueezeArcWindowStart) {
-      pencilSqueezeArcWindowStart = nextWindowStart;
-    }
   }
 
   function resetPencilSqueezeArcWindow(): void {
     pencilSqueezeArcWindowStart = 0;
-    if (pencilSqueezeArcScroll) {
-      pencilSqueezeArcScroll.scrollTop = 0;
-    }
-  }
-
-  function pencilSqueezeArcScrollSensorHeight(): number {
-    return PENCIL_SQUEEZE_ARC_SHELL_HEIGHT + maxPencilSqueezeArcWindowStart() * PENCIL_SQUEEZE_ARC_SLOT_PITCH;
   }
 
   function clamp(value: number, min: number, max: number): number {
@@ -3377,32 +3395,25 @@
         <svg aria-hidden="true" class="pencil-squeeze-shell-svg" viewBox={`0 0 195 ${PENCIL_SQUEEZE_ARC_SHELL_HEIGHT}`}>
           <path
             class="pencil-squeeze-shell-outline"
-            d="M 99 295 A 135 135 0 0 1 155 35"
+            d="M 111 295 A 135 135 0 0 1 167 35"
           ></path>
           <path
             class="pencil-squeeze-shell-track"
-            d="M 99 295 A 135 135 0 0 1 155 35"
+            d="M 111 295 A 135 135 0 0 1 167 35"
           ></path>
           {#each PENCIL_SQUEEZE_ARC_DIVIDERS as dividerPath}
             <path class="pencil-squeeze-shell-divider" d={dividerPath}></path>
           {/each}
         </svg>
 
-        <div class="pencil-squeeze-arc-scroll-sensor" bind:this={pencilSqueezeArcScroll} on:scroll={syncPencilSqueezeArcWindowFromScroll}>
-          <div class="pencil-squeeze-arc-scroll-track">
-            {#each Array.from({ length: maxPencilSqueezeArcWindowStart() + 1 }) as _, index}
-              <div class="pencil-squeeze-arc-scroll-step" style={`height:${PENCIL_SQUEEZE_ARC_SLOT_PITCH}px;`} aria-hidden="true"></div>
-            {/each}
-            <div
-              class="pencil-squeeze-arc-scroll-endcap"
-              style={`height:${Math.max(0, PENCIL_SQUEEZE_ARC_SHELL_HEIGHT - PENCIL_SQUEEZE_ARC_SLOT_PITCH)}px;`}
-              aria-hidden="true"
-            ></div>
-          </div>
-        </div>
-
-        <div class="pencil-squeeze-arc-rail">
-            {#each visiblePencilSqueezeArcItems() as item, index}
+        <div
+          class="pencil-squeeze-arc-rail"
+          on:pointerdown={handleSqueezeRailPointerDown}
+          on:pointermove={handleSqueezeRailPointerMove}
+          on:pointerup={handleSqueezeRailPointerUp}
+          on:pointercancel={handleSqueezeRailPointerUp}
+        >
+            {#each pencilSqueezeVisibleItems as item, index (item.id)}
               <button
                 class:active={item.kind === 'tool' && selectedTool === item.id}
                 class:pencil-squeeze-arc-action={item.kind === 'action'}
@@ -3415,7 +3426,7 @@
                   ((item.id === 'undo' && !canUndoAvailable) || (item.id === 'customize' && !canOpenCurrentToolPanel()))
                 }
                 style={pencilSqueezeArcItemStyle(index, PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS, item.kind === 'tool' ? item.accent : currentToolAccent())}
-                on:click={() => handlePencilSqueezeArcItem(item)}
+                on:click={() => { if (!pencilSqueezeSwipeSwiped) handlePencilSqueezeArcItem(item); }}
                 on:pointerdown={(event) => {
                   if (item.kind === 'action' && item.id === 'undo') {
                     event.preventDefault();

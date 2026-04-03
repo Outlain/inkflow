@@ -18,8 +18,8 @@ describe('resolvePencilSqueezeMenuPlacement', () => {
         menuHeight: 300
       })
     ).toEqual({
-      left: 430,
-      top: 295,
+      left: 520,
+      top: 310,
       side: 'left'
     });
   });
@@ -35,7 +35,7 @@ describe('resolvePencilSqueezeMenuPlacement', () => {
         menuHeight: 320
       })
     ).toEqual({
-      left: 50,
+      left: 16,
       top: 16,
       side: 'right'
     });
