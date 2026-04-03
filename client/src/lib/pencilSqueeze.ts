@@ -39,7 +39,7 @@ export interface ResolvePencilSqueezeArcContentHeightOptions {
 
 /* Polar-arc geometry for the GoodNotes-style curved tool band. */
 const ARC_RADIUS = 135;
-const ARC_CX = 185;
+const ARC_CX = 150;
 const ARC_CY = 170;
 const ARC_START_DEG = 248;
 const ARC_END_DEG = 88;
@@ -48,12 +48,12 @@ export function resolvePencilSqueezeMenuPlacement(
   options: ResolvePencilSqueezeMenuPlacementOptions
 ): PencilSqueezeMenuPlacement {
   const margin = options.margin ?? 16;
-  const radialOffset = options.radialOffset ?? 18;
+  const radialOffset = options.radialOffset ?? 10;
   const canFitLeft = options.anchorX - options.menuWidth - radialOffset >= margin;
   const side: PencilSqueezeMenuSide = canFitLeft ? 'left' : 'right';
   const unclampedLeft =
     side === 'left' ? options.anchorX - options.menuWidth - radialOffset : options.anchorX + radialOffset;
-  const unclampedTop = options.anchorY - options.menuHeight / 2;
+  const unclampedTop = options.anchorY - options.menuHeight * 0.35;
 
   return {
     left: clamp(unclampedLeft, margin, Math.max(margin, options.rootWidth - options.menuWidth - margin)),
@@ -104,7 +104,7 @@ export function resolvePencilSqueezeArcContentHeight(
 }
 
 export function resolvePencilSqueezeArcDividers(total: number): string[] {
-  const halfBand = 39;
+  const halfBand = 29;
   const innerR = ARC_RADIUS - halfBand;
   const outerR = ARC_RADIUS + halfBand;
   const lines: string[] = [];

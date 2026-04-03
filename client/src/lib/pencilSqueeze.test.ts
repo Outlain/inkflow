@@ -18,8 +18,8 @@ describe('resolvePencilSqueezeMenuPlacement', () => {
         menuHeight: 300
       })
     ).toEqual({
-      left: 422,
-      top: 250,
+      left: 430,
+      top: 295,
       side: 'left'
     });
   });
@@ -35,7 +35,7 @@ describe('resolvePencilSqueezeMenuPlacement', () => {
         menuHeight: 320
       })
     ).toEqual({
-      left: 58,
+      left: 50,
       top: 16,
       side: 'right'
     });
@@ -48,18 +48,18 @@ describe('resolvePencilSqueezeArcToolLayout', () => {
       index: 0,
       total: 8,
       side: 'left',
-      shellWidth: 240
+      shellWidth: 195
     });
     const middle = resolvePencilSqueezeArcToolLayout({
       index: 4,
       total: 8,
       side: 'left',
-      shellWidth: 240
+      shellWidth: 195
     });
 
     expect(first.left).toBeGreaterThan(middle.left);
     expect(first.top).toBeLessThan(middle.top);
-    expect(first.left).toBeGreaterThan(120);
+    expect(first.left).toBeGreaterThan(110);
   });
 
   it('mirrors right-side tools inside the shell bounds', () => {
@@ -67,18 +67,18 @@ describe('resolvePencilSqueezeArcToolLayout', () => {
       index: 2,
       total: 8,
       side: 'left',
-      shellWidth: 240
+      shellWidth: 195
     });
     const rightSide = resolvePencilSqueezeArcToolLayout({
       index: 2,
       total: 8,
       side: 'right',
-      shellWidth: 240
+      shellWidth: 195
     });
 
-    expect(leftSide.left + rightSide.left + rightSide.size).toBeCloseTo(240, 5);
-    expect(rightSide.left + rightSide.size).toBeLessThanOrEqual(240);
-    expect(leftSide.left + leftSide.size).toBeLessThanOrEqual(240);
+    expect(leftSide.left + rightSide.left + rightSide.size).toBeCloseTo(195, 5);
+    expect(rightSide.left + rightSide.size).toBeLessThanOrEqual(195);
+    expect(leftSide.left + leftSide.size).toBeLessThanOrEqual(195);
   });
 
   it('computes a content height that contains the full arc', () => {

@@ -185,8 +185,8 @@
   const DRAFT_PERSIST_DEBOUNCE_MS = 400;
   const INK_IDLE_FLUSH_MS = 1500;
   const PENCIL_SQUEEZE_LONG_PRESS_MS = 420;
-  const PENCIL_SQUEEZE_MENU_WIDTH = 240;
-  const PENCIL_SQUEEZE_ARC_SHELL_WIDTH = 240;
+  const PENCIL_SQUEEZE_MENU_WIDTH = 195;
+  const PENCIL_SQUEEZE_ARC_SHELL_WIDTH = 195;
   const PENCIL_SQUEEZE_ARC_BUTTON_SIZE = 48;
   const PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS = 8;
   const PENCIL_SQUEEZE_ARC_SLOT_PITCH = PENCIL_SQUEEZE_ARC_BUTTON_SIZE;
@@ -353,6 +353,7 @@
   let pencilSqueezeMenuLeft = 0;
   let pencilSqueezeMenuTop = 0;
   let pencilSqueezeMenuSide: PencilSqueezeMenuSide = 'left';
+  let pencilSqueezeMenuEl: HTMLDivElement | null = null;
   let pencilSqueezeArcScroll: HTMLDivElement | null = null;
   let pencilSqueezeArcWindowStart = 0;
   let pencilSqueezePressTimer = 0;
@@ -750,6 +751,16 @@
     suppressedPencilSqueezeClickKey = '';
   }
 
+  function handleDocumentPointerDownForSqueeze(event: PointerEvent): void {
+    if (!pencilSqueezeMenuVisible || !pencilSqueezeMenuEl) {
+      return;
+    }
+    if (pencilSqueezeMenuEl.contains(event.target as Node)) {
+      return;
+    }
+    closePencilSqueezeMenu();
+  }
+
   function cancelPencilSqueezeLongPress(): void {
     if (!pencilSqueezePressTimer) {
       return;
@@ -803,6 +814,10 @@
   }
 
   function handlePencilSqueezeEvent(event: Event): void {
+    if (pencilSqueezeMenuVisible) {
+      closePencilSqueezeMenu();
+      return;
+    }
     const detail = (event as CustomEvent<NativePencilSqueezeDetail>).detail ?? {};
     openPencilSqueezeMenu(detail);
   }
@@ -822,22 +837,14 @@
   }
 
   function selectFromPencilSqueezeMenu(id: ReaderToolPanel | EditorTool): void {
-    if (id === 'lasso' || id === 'sticky' || id === 'tape' || id === 'laser') {
-      const isSameTool = selectedTool === id;
-      setSelectedTool(id);
-      activeToolPanel = null;
-      closeStrokePopover();
-      pencilSqueezeDetailsOpen = isSameTool ? !pencilSqueezeDetailsOpen : true;
+    if (id === selectedTool) {
+      closePencilSqueezeMenu();
       return;
     }
 
-    if (id === 'pen' || id === 'pencil' || id === 'highlighter' || id === 'eraser' || id === 'text' || id === 'shape' || id === 'hand') {
-      const isSameTool = selectedTool === id;
-      setSelectedTool(id);
-      activeToolPanel = null;
-      closeStrokePopover();
-      pencilSqueezeDetailsOpen = isSameTool ? !pencilSqueezeDetailsOpen : true;
-    }
+    setSelectedTool(id);
+    activeToolPanel = null;
+    closeStrokePopover();
   }
 
   function handlePencilSqueezeArcItem(item: PencilSqueezeArcItem): void {
@@ -881,37 +888,30 @@
 
   function selectPencilSqueezeColor(color: string): void {
     selectedColor = color;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeTextSize(size: typeof textSizePresets[number]): void {
     textFontSize = size;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeShape(shape: ShapeKind): void {
     selectedShapeKind = shape;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeTapeWidth(width: number): void {
     tapeWidth = width;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeLassoMode(mode: 'rectangle' | 'freehand'): void {
     lassoMode = mode;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeLaserMode(mode: 'dot' | 'line'): void {
     laserPointerMode = mode;
-    closePencilSqueezeMenu();
   }
 
   function selectPencilSqueezeTapeStraightMode(nextValue: boolean): void {
     tapeStraightMode = nextValue;
-    closePencilSqueezeMenu();
   }
 
   function applyPencilSqueezeDebugStateFromUrl(): void {
@@ -964,7 +964,6 @@
     }
 
     undoCurrentPage();
-    closePencilSqueezeMenu();
   }
 
   function schedulePencilSqueezeFallback(event: PointerEvent, id: ReaderToolPanel | EditorTool, target: HTMLElement | null): void {
@@ -2935,6 +2934,7 @@
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.addEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
+    document.addEventListener('pointerdown', handleDocumentPointerDownForSqueeze, true);
     strokePresetSettings = loadStrokePresetSettings();
     strokePresetSettingsLoaded = true;
     eraserStrokeMode = loadEraserStrokeMode();
@@ -2982,6 +2982,7 @@
     document.removeEventListener('visibilitychange', handleVisibilityChange);
     window.removeEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.removeEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
+    document.removeEventListener('pointerdown', handleDocumentPointerDownForSqueeze, true);
     cancelAnimationFrame(resizeFrame);
     cancelAnimationFrame(windowResizeFrame);
     cancelAnimationFrame(scrollFrame);
@@ -3363,8 +3364,8 @@
   {/if}
 
   {#if pencilSqueezeMenuVisible}
-    <button aria-label="Close pencil squeeze menu" class="pencil-squeeze-backdrop" type="button" on:click={closePencilSqueezeMenu}></button>
     <div
+      bind:this={pencilSqueezeMenuEl}
       aria-label="Apple Pencil quick tools"
       class:pencil-squeeze-menu-left={pencilSqueezeMenuSide === 'left'}
       class:pencil-squeeze-menu-right={pencilSqueezeMenuSide === 'right'}
@@ -3373,14 +3374,14 @@
       style={`left:${pencilSqueezeMenuLeft}px; top:${pencilSqueezeMenuTop}px; --tool-accent:${currentToolAccent()};`}
     >
       <div class="pencil-squeeze-arc-shell">
-        <svg aria-hidden="true" class="pencil-squeeze-shell-svg" viewBox={`0 0 240 ${PENCIL_SQUEEZE_ARC_SHELL_HEIGHT}`}>
+        <svg aria-hidden="true" class="pencil-squeeze-shell-svg" viewBox={`0 0 195 ${PENCIL_SQUEEZE_ARC_SHELL_HEIGHT}`}>
           <path
             class="pencil-squeeze-shell-outline"
-            d="M 134 295 A 135 135 0 0 1 190 35"
+            d="M 99 295 A 135 135 0 0 1 155 35"
           ></path>
           <path
             class="pencil-squeeze-shell-track"
-            d="M 134 295 A 135 135 0 0 1 190 35"
+            d="M 99 295 A 135 135 0 0 1 155 35"
           ></path>
           {#each PENCIL_SQUEEZE_ARC_DIVIDERS as dividerPath}
             <path class="pencil-squeeze-shell-divider" d={dividerPath}></path>
@@ -3451,7 +3452,7 @@
                 </div>
                 <div class="size-group pencil-squeeze-size-group">
                   {#each sizePresets as preset}
-                    <button class:active={selectedSize === preset.value} class="size-button" type="button" aria-label={preset.label} on:click={() => selectQuickSizePreset(preset.value, true)}>
+                    <button class:active={selectedSize === preset.value} class="size-button" type="button" aria-label={preset.label} on:click={() => selectQuickSizePreset(preset.value)}>
                       <span class={`size-dot ${preset.className}`} style={strokePresetDotStyle(preset.value)}></span>
                     </button>
                   {/each}
@@ -3518,10 +3519,10 @@
                   <button class:active={selectedShapeKind === 'diamond'} class="shape-button popover-shape-button" type="button" on:click={() => selectPencilSqueezeShape('diamond')}>◆</button>
                 </div>
                 <div class="stroke-popover-mode-group panel-mode-group">
-                  <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => { selectedShapeFill = !selectedShapeFill; closePencilSqueezeMenu(); }}>
+                  <button class:active={selectedShapeFill} class="stroke-mode-button" type="button" on:click={() => { selectedShapeFill = !selectedShapeFill; }}>
                     {selectedShapeFill ? 'Filled' : 'Outline'}
                   </button>
-                  <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => { selectedShapeLineStyle = 'solid'; closePencilSqueezeMenu(); }}>
+                  <button class:active={selectedShapeLineStyle === 'solid'} class="stroke-mode-button" type="button" on:click={() => { selectedShapeLineStyle = 'solid'; }}>
                     Solid
                   </button>
                 </div>
@@ -3560,11 +3561,11 @@
                   <span>Quick note</span>
                 </div>
                 <div class="palette-group pencil-squeeze-color-group">
-                  <button class:active={stickyNoteColor === '#f6a6a6'} class="color-chip popover-chip" type="button" aria-label="Pink sticky note" style="background:#f6a6a6" on:click={() => { stickyNoteColor = '#f6a6a6'; closePencilSqueezeMenu(); }}></button>
-                  <button class:active={stickyNoteColor === '#ffd587'} class="color-chip popover-chip" type="button" aria-label="Amber sticky note" style="background:#ffd587" on:click={() => { stickyNoteColor = '#ffd587'; closePencilSqueezeMenu(); }}></button>
-                  <button class:active={stickyNoteColor === '#f5ef83'} class="color-chip popover-chip" type="button" aria-label="Yellow sticky note" style="background:#f5ef83" on:click={() => { stickyNoteColor = '#f5ef83'; closePencilSqueezeMenu(); }}></button>
-                  <button class:active={stickyNoteColor === '#a8efb7'} class="color-chip popover-chip" type="button" aria-label="Green sticky note" style="background:#a8efb7" on:click={() => { stickyNoteColor = '#a8efb7'; closePencilSqueezeMenu(); }}></button>
-                  <button class:active={stickyNoteColor === '#b6d8ff'} class="color-chip popover-chip" type="button" aria-label="Blue sticky note" style="background:#b6d8ff" on:click={() => { stickyNoteColor = '#b6d8ff'; closePencilSqueezeMenu(); }}></button>
+                  <button class:active={stickyNoteColor === '#f6a6a6'} class="color-chip popover-chip" type="button" aria-label="Pink sticky note" style="background:#f6a6a6" on:click={() => { stickyNoteColor = '#f6a6a6'; }}></button>
+                  <button class:active={stickyNoteColor === '#ffd587'} class="color-chip popover-chip" type="button" aria-label="Amber sticky note" style="background:#ffd587" on:click={() => { stickyNoteColor = '#ffd587'; }}></button>
+                  <button class:active={stickyNoteColor === '#f5ef83'} class="color-chip popover-chip" type="button" aria-label="Yellow sticky note" style="background:#f5ef83" on:click={() => { stickyNoteColor = '#f5ef83'; }}></button>
+                  <button class:active={stickyNoteColor === '#a8efb7'} class="color-chip popover-chip" type="button" aria-label="Green sticky note" style="background:#a8efb7" on:click={() => { stickyNoteColor = '#a8efb7'; }}></button>
+                  <button class:active={stickyNoteColor === '#b6d8ff'} class="color-chip popover-chip" type="button" aria-label="Blue sticky note" style="background:#b6d8ff" on:click={() => { stickyNoteColor = '#b6d8ff'; }}></button>
                 </div>
               </div>
             {:else if selectedTool === 'tape'}
