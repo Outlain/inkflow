@@ -103,13 +103,16 @@ export function resolvePencilSqueezeArcContentHeight(
   return Math.ceil(Math.max(y0, y1) + buttonSize / 2 + padding);
 }
 
-export function resolvePencilSqueezeArcDividers(total: number): string[] {
+/** Generate divider SVG paths only at specific slot boundaries (e.g. zone edges). */
+export function resolvePencilSqueezeArcZoneDividers(
+  total: number,
+  boundaryIndices: number[]
+): string[] {
   const halfBand = 29;
   const innerR = ARC_RADIUS - halfBand;
   const outerR = ARC_RADIUS + halfBand;
-  const lines: string[] = [];
 
-  for (let i = 0; i < total - 1; i++) {
+  return boundaryIndices.map((i) => {
     const progress = (i + 0.5) / (total - 1);
     const angleDeg = ARC_END_DEG + progress * (ARC_START_DEG - ARC_END_DEG);
     const rad = (angleDeg * Math.PI) / 180;
@@ -121,10 +124,8 @@ export function resolvePencilSqueezeArcDividers(total: number): string[] {
     const x2 = ARC_CX + outerR * cos;
     const y2 = ARC_CY - outerR * sin;
 
-    lines.push(`M ${x1.toFixed(1)} ${y1.toFixed(1)} L ${x2.toFixed(1)} ${y2.toFixed(1)}`);
-  }
-
-  return lines;
+    return `M ${x1.toFixed(1)} ${y1.toFixed(1)} L ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+  });
 }
 
 function clamp(value: number, min: number, max: number): number {

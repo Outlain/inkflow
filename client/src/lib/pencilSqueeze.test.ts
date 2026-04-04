@@ -46,13 +46,13 @@ describe('resolvePencilSqueezeArcToolLayout', () => {
   it('places left-side tools along an inward-facing arc', () => {
     const first = resolvePencilSqueezeArcToolLayout({
       index: 0,
-      total: 8,
+      total: 6,
       side: 'left',
       shellWidth: 195
     });
     const middle = resolvePencilSqueezeArcToolLayout({
-      index: 4,
-      total: 8,
+      index: 3,
+      total: 6,
       side: 'left',
       shellWidth: 195
     });
@@ -65,13 +65,13 @@ describe('resolvePencilSqueezeArcToolLayout', () => {
   it('mirrors right-side tools inside the shell bounds', () => {
     const leftSide = resolvePencilSqueezeArcToolLayout({
       index: 2,
-      total: 8,
+      total: 6,
       side: 'left',
       shellWidth: 195
     });
     const rightSide = resolvePencilSqueezeArcToolLayout({
       index: 2,
-      total: 8,
+      total: 6,
       side: 'right',
       shellWidth: 195
     });

@@ -1440,6 +1440,7 @@ img {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  pointer-events: none;
   --pencil-squeeze-track: color-mix(in srgb, var(--ink-surface-modal) 95%, var(--ink-panel) 5%);
   --pencil-squeeze-outline: color-mix(in srgb, var(--ink-border-strong) 60%, transparent);
   --pencil-squeeze-text: var(--ink-text);
@@ -1453,6 +1454,7 @@ img {
   width: 195px;
   height: 328px;
   z-index: 1;
+  pointer-events: none;
 }
 
 .pencil-squeeze-shell-svg {
@@ -1460,7 +1462,7 @@ img {
   inset: 0;
   overflow: visible;
   filter: drop-shadow(0 8px 18px rgba(18, 20, 24, 0.14));
-  pointer-events: none;
+  z-index: 1;
 }
 
 .pencil-squeeze-menu-right .pencil-squeeze-shell-svg {
@@ -1474,12 +1476,32 @@ img {
   z-index: 1;
 }
 
+.pencil-squeeze-shell-hitarea {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 80;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: stroke;
+  touch-action: none;
+}
+
 .pencil-squeeze-shell-outline {
   fill: none;
   stroke: var(--pencil-squeeze-outline);
   stroke-width: 64;
   stroke-linecap: round;
   stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.pencil-squeeze-shell-divider {
+  fill: none;
+  stroke: var(--pencil-squeeze-outline);
+  stroke-width: 1.2;
+  pointer-events: none;
+  stroke-linecap: round;
+  opacity: 0.45;
 }
 
 .pencil-squeeze-shell-track {
@@ -1488,15 +1510,10 @@ img {
   stroke-width: 58;
   stroke-linecap: round;
   stroke-linejoin: round;
+  pointer-events: stroke;
+  touch-action: none;
 }
 
-.pencil-squeeze-shell-divider {
-  fill: none;
-  stroke: var(--pencil-squeeze-outline);
-  stroke-width: 1.2;
-  stroke-linecap: round;
-  opacity: 0.45;
-}
 
 .pencil-squeeze-detail-swatch {
   width: 18px;
@@ -1511,7 +1528,7 @@ img {
   width: 100%;
   height: 100%;
   z-index: 2;
-  touch-action: none;
+  pointer-events: none;
 }
 
 .pencil-squeeze-arc-tool {
@@ -1520,18 +1537,28 @@ img {
   place-items: center;
   border-radius: 999px;
   border: 0;
+  pointer-events: auto;
+  touch-action: none;
   background: transparent;
   color: var(--pencil-squeeze-text-soft);
   box-shadow: none;
   font: inherit;
   font-size: 1.3rem;
-  touch-action: manipulation;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  appearance: none;
+  -webkit-appearance: none;
   transition:
     left 180ms ease-out,
     top 180ms ease-out,
     background-color 140ms ease,
     box-shadow 140ms ease,
     color 140ms ease;
+}
+
+.pencil-squeeze-arc-tool:focus,
+.pencil-squeeze-arc-tool:focus-visible {
+  outline: none;
 }
 
 .pencil-squeeze-arc-tool:disabled {
@@ -1558,6 +1585,7 @@ img {
   position: relative;
   z-index: 2;
   width: 185px;
+  pointer-events: auto;
   display: grid;
   gap: 8px;
   margin-top: -20px;
@@ -1990,6 +2018,15 @@ img {
 .reader-scroll.ink-scroll-locked {
   touch-action: none;
   overscroll-behavior: none;
+}
+
+/* Freeze page scrolling entirely while the pencil squeeze menu is open.
+   overflow:hidden stops inertial scroll; touch-action:none prevents new
+   scroll gestures from the pencil or finger. */
+.reader-scroll.squeeze-scroll-locked {
+  overflow: hidden !important;
+  touch-action: none !important;
+  overscroll-behavior: none !important;
 }
 
 .reader-scroll.compact-scroll {

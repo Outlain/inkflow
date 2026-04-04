@@ -46,8 +46,8 @@
   import { prefetchPdfPage } from '../pdf';
   import {
     resolvePencilSqueezeArcContentHeight,
-    resolvePencilSqueezeArcDividers,
     resolvePencilSqueezeArcToolLayout,
+    resolvePencilSqueezeArcZoneDividers,
     resolvePencilSqueezeMenuPlacement,
     type PencilSqueezeMenuSide
   } from '../pencilSqueeze';
@@ -188,14 +188,13 @@
   const PENCIL_SQUEEZE_MENU_WIDTH = 195;
   const PENCIL_SQUEEZE_ARC_SHELL_WIDTH = 195;
   const PENCIL_SQUEEZE_ARC_BUTTON_SIZE = 48;
-  const PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS = 8;
+  const PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS = 6;
   const PENCIL_SQUEEZE_ARC_SLOT_PITCH = PENCIL_SQUEEZE_ARC_BUTTON_SIZE;
   const PENCIL_SQUEEZE_ARC_SHELL_HEIGHT = resolvePencilSqueezeArcContentHeight({
     total: PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS,
     buttonSize: PENCIL_SQUEEZE_ARC_BUTTON_SIZE
   });
   const PENCIL_SQUEEZE_MENU_MAX_HEIGHT = PENCIL_SQUEEZE_ARC_SHELL_HEIGHT + 188;
-  const PENCIL_SQUEEZE_ARC_DIVIDERS = resolvePencilSqueezeArcDividers(PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS);
   const textSizePresets = [18, 24, 32] as const;
   const middleMenuItems = [
     { id: 'lasso' as const, label: 'Lasso', glyph: '⬚', accent: '#8db5d8' },
@@ -248,6 +247,10 @@
     { kind: 'action', id: 'undo', label: 'Undo', glyph: '↺' }
   ];
   const PENCIL_SQUEEZE_SCROLL_VISIBLE = PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS - pencilSqueezeTopItems.length - pencilSqueezeBottomItems.length;
+  const PENCIL_SQUEEZE_ZONE_DIVIDERS = resolvePencilSqueezeArcZoneDividers(
+    PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS,
+    [pencilSqueezeTopItems.length - 1, PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS - pencilSqueezeBottomItems.length - 1]
+  );
   const pageTemplates: NotebookTemplate[] = ['blank', 'ruled', 'grid', 'dot'];
   const clientId = createClientId();
 
@@ -666,25 +669,64 @@
   function handleSqueezeRailPointerMove(event: PointerEvent): void {
     if (event.pointerId !== pencilSqueezeSwipePointerId) return;
     const dy = event.clientY - pencilSqueezeSwipeStartY;
+    // Mark as swiped early (8px) to suppress accidental click on button
+    if (!pencilSqueezeSwipeSwiped && Math.abs(dy) >= 8) {
+      pencilSqueezeSwipeSwiped = true;
+    }
     if (Math.abs(dy) >= PENCIL_SQUEEZE_SWIPE_THRESHOLD) {
       // Positive dy = finger moved down = scroll up (show earlier tools)
       scrollPencilSqueezeArc(dy > 0 ? -1 : 1);
       pencilSqueezeSwipeStartY = event.clientY;
-      pencilSqueezeSwipeSwiped = true;
     }
   }
 
+  let pencilSqueezeSwipeCancelTimer = 0;
+
   function handleSqueezeRailPointerUp(event: PointerEvent): void {
     if (event.pointerId !== pencilSqueezeSwipePointerId) return;
+    clearTimeout(pencilSqueezeSwipeCancelTimer);
     pencilSqueezeSwipePointerId = -1;
+    // Remove lingering focus from buttons after swipe
+    if (document.activeElement instanceof HTMLElement && pencilSqueezeMenuEl?.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+  }
+
+  /** On pointercancel (e.g. palm rejection on iPad), keep the swipe guard
+   *  active briefly so stray palm pointerdowns don't dismiss the menu.
+   *  After 400ms, clean up so the guard doesn't block future dismiss. */
+  function handleSqueezeRailPointerCancel(event: PointerEvent): void {
+    if (event.pointerId !== pencilSqueezeSwipePointerId) return;
+    clearTimeout(pencilSqueezeSwipeCancelTimer);
+    pencilSqueezeSwipeCancelTimer = window.setTimeout(() => {
+      pencilSqueezeSwipePointerId = -1;
+    }, 400);
+  }
+
+  /** Document-level pointerup catches the end of a swipe even after the
+   *  captured element was removed from the DOM during a scroll update. */
+  function handleDocumentPointerUpForSqueeze(event: PointerEvent): void {
+    if (event.pointerId === pencilSqueezeSwipePointerId) {
+      clearTimeout(pencilSqueezeSwipeCancelTimer);
+      pencilSqueezeSwipePointerId = -1;
+    }
+  }
+
+  function handleSqueezeRailLostCapture(_event: PointerEvent): void {
+    // Do NOT reset pencilSqueezeSwipePointerId here.
+    // Keep the swipe "active" so the dismiss handler stays guarded.
+    // Cleanup happens via pointerup (document-level) or cancel timeout.
   }
 
   function scrollPencilSqueezeArc(direction: 1 | -1): void {
-    pencilSqueezeArcWindowStart = clamp(
+    const next = clamp(
       pencilSqueezeArcWindowStart + direction,
       0,
       maxPencilSqueezeArcWindowStart()
     );
+    if (next !== pencilSqueezeArcWindowStart) {
+      pencilSqueezeArcWindowStart = next;
+    }
   }
 
   function resetPencilSqueezeArcWindow(): void {
@@ -767,10 +809,27 @@
     pencilSqueezeMenuVisible = false;
     pencilSqueezeDetailsOpen = false;
     suppressedPencilSqueezeClickKey = '';
+    unlockScrollForSqueeze();
+  }
+
+  function lockScrollForSqueeze(): void {
+    if (scrollPane) {
+      scrollPane.classList.add('squeeze-scroll-locked');
+    }
+  }
+
+  function unlockScrollForSqueeze(): void {
+    if (scrollPane) {
+      scrollPane.classList.remove('squeeze-scroll-locked');
+    }
   }
 
   function handleDocumentPointerDownForSqueeze(event: PointerEvent): void {
     if (!pencilSqueezeMenuVisible || !pencilSqueezeMenuEl) {
+      return;
+    }
+    // Don't dismiss while a swipe gesture is active (pointer captured)
+    if (pencilSqueezeSwipePointerId !== -1) {
       return;
     }
     if (pencilSqueezeMenuEl.contains(event.target as Node)) {
@@ -828,6 +887,7 @@
     pencilSqueezeDetailsOpen = false;
     activeToolPanel = null;
     closeStrokePopover();
+    lockScrollForSqueeze();
     tick().then(resetPencilSqueezeArcWindow);
   }
 
@@ -856,7 +916,6 @@
 
   function selectFromPencilSqueezeMenu(id: ReaderToolPanel | EditorTool): void {
     if (id === selectedTool) {
-      closePencilSqueezeMenu();
       return;
     }
 
@@ -2953,6 +3012,7 @@
     window.addEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.addEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
     document.addEventListener('pointerdown', handleDocumentPointerDownForSqueeze, true);
+    document.addEventListener('pointerup', handleDocumentPointerUpForSqueeze, true);
     strokePresetSettings = loadStrokePresetSettings();
     strokePresetSettingsLoaded = true;
     eraserStrokeMode = loadEraserStrokeMode();
@@ -3001,6 +3061,7 @@
     window.removeEventListener(NATIVE_PENCIL_SQUEEZE_EVENT, handlePencilSqueezeEvent as EventListener);
     window.removeEventListener(NATIVE_PENCIL_SWITCH_PREVIOUS_EVENT, handlePencilSwitchPreviousEvent as EventListener);
     document.removeEventListener('pointerdown', handleDocumentPointerDownForSqueeze, true);
+    document.removeEventListener('pointerup', handleDocumentPointerUpForSqueeze, true);
     cancelAnimationFrame(resizeFrame);
     cancelAnimationFrame(windowResizeFrame);
     cancelAnimationFrame(scrollFrame);
@@ -3394,25 +3455,33 @@
       <div class="pencil-squeeze-arc-shell">
         <svg aria-hidden="true" class="pencil-squeeze-shell-svg" viewBox={`0 0 195 ${PENCIL_SQUEEZE_ARC_SHELL_HEIGHT}`}>
           <path
+            class="pencil-squeeze-shell-hitarea"
+            d="M 111 295 A 135 135 0 0 1 167 35"
+            on:pointerdown={handleSqueezeRailPointerDown}
+            on:pointermove={handleSqueezeRailPointerMove}
+            on:pointerup={handleSqueezeRailPointerUp}
+            on:pointercancel={handleSqueezeRailPointerCancel}
+            on:lostpointercapture={handleSqueezeRailLostCapture}
+          ></path>
+          <path
             class="pencil-squeeze-shell-outline"
             d="M 111 295 A 135 135 0 0 1 167 35"
           ></path>
           <path
             class="pencil-squeeze-shell-track"
             d="M 111 295 A 135 135 0 0 1 167 35"
+            on:pointerdown={handleSqueezeRailPointerDown}
+            on:pointermove={handleSqueezeRailPointerMove}
+            on:pointerup={handleSqueezeRailPointerUp}
+            on:pointercancel={handleSqueezeRailPointerCancel}
+            on:lostpointercapture={handleSqueezeRailLostCapture}
           ></path>
-          {#each PENCIL_SQUEEZE_ARC_DIVIDERS as dividerPath}
+          {#each PENCIL_SQUEEZE_ZONE_DIVIDERS as dividerPath}
             <path class="pencil-squeeze-shell-divider" d={dividerPath}></path>
           {/each}
         </svg>
 
-        <div
-          class="pencil-squeeze-arc-rail"
-          on:pointerdown={handleSqueezeRailPointerDown}
-          on:pointermove={handleSqueezeRailPointerMove}
-          on:pointerup={handleSqueezeRailPointerUp}
-          on:pointercancel={handleSqueezeRailPointerUp}
-        >
+        <div class="pencil-squeeze-arc-rail">
             {#each pencilSqueezeVisibleItems as item, index (item.id)}
               <button
                 class:active={item.kind === 'tool' && selectedTool === item.id}
@@ -3428,11 +3497,16 @@
                 style={pencilSqueezeArcItemStyle(index, PENCIL_SQUEEZE_ARC_VISIBLE_SLOTS, item.kind === 'tool' ? item.accent : currentToolAccent())}
                 on:click={() => { if (!pencilSqueezeSwipeSwiped) handlePencilSqueezeArcItem(item); }}
                 on:pointerdown={(event) => {
+                  handleSqueezeRailPointerDown(event);
                   if (item.kind === 'action' && item.id === 'undo') {
                     event.preventDefault();
                     undoFromPencilSqueeze();
                   }
                 }}
+                on:pointermove={handleSqueezeRailPointerMove}
+                on:pointerup={handleSqueezeRailPointerUp}
+                on:pointercancel={handleSqueezeRailPointerCancel}
+                on:lostpointercapture={handleSqueezeRailLostCapture}
               >
                 {#if item.kind === 'action' && item.id === 'colors'}
                   <span class="pencil-squeeze-color-icon" aria-hidden="true" style={`background:${currentToolAccent()};`}></span>
