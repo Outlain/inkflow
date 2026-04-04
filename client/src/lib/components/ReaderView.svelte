@@ -265,6 +265,7 @@
   let previousSelectedTool: EditorTool | null = null;
   let selectedColor = colorChips[0];
   let selectedSize = 2;
+  const perToolSizePreset: Record<string, number> = { pen: 2, pencil: 2, highlighter: 2, eraser: 2 };
   let activeToolPanel: ReaderToolPanel | null = null;
   let textFontSize = textSizePresets[1];
   let stickyNoteColor = '#f5ef83';
@@ -766,8 +767,16 @@
 
   function setSelectedTool(tool: EditorTool): void {
     if (tool !== selectedTool) {
+      // Save current tool's size preset before switching
+      if (adjustableStrokeTool(selectedTool)) {
+        perToolSizePreset[selectedTool] = selectedSize;
+      }
       previousSelectedTool = selectedTool;
       selectedTool = tool;
+      // Restore new tool's last-used size preset
+      if (adjustableStrokeTool(tool) && perToolSizePreset[tool]) {
+        selectedSize = perToolSizePreset[tool];
+      }
     }
 
     if (tool === 'pencil' && selectedColor === DEFAULT_PEN_COLOR) {
@@ -950,6 +959,9 @@
 
   function selectQuickSizePreset(preset: number, closeMenu = false): void {
     selectedSize = preset;
+    if (adjustableStrokeTool(selectedTool)) {
+      perToolSizePreset[selectedTool] = preset;
+    }
     const tool = adjustableStrokeTool(selectedTool);
     if (strokePopover && tool && strokePopover.tool === tool) {
       strokePopover = {
@@ -1315,6 +1327,9 @@
 
     setSelectedTool(tool);
     selectedSize = preset;
+    if (adjustableStrokeTool(tool)) {
+      perToolSizePreset[tool] = preset;
+    }
     strokePopover = {
       tool,
       preset,
