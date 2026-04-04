@@ -83,6 +83,8 @@
     type EraserStrokeMode,
     type StrokePresetSettings
   } from '../strokeSettings';
+  import penIconSvg from '../icons/pen.svg?raw';
+  import pencilIconSvg from '../icons/pencil.svg?raw';
 
   // ── Props ─────────────────────────────────────────────────────────────
 
@@ -196,6 +198,79 @@
   });
   const PENCIL_SQUEEZE_MENU_MAX_HEIGHT = PENCIL_SQUEEZE_ARC_SHELL_HEIGHT + 188;
   const textSizePresets = [18, 24, 32] as const;
+  const TOOL_ICON_FILLED_SVGS: Record<string, string> = {
+    pen: penIconSvg,
+    pencil: pencilIconSvg
+  };
+
+  const TOOL_ICON_PATHS: Record<string, string[]> = {
+    highlighter: [
+      'm9 11-6 6v3h9l3-3',
+      'm22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'
+    ],
+    eraser: [
+      'M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21',
+      'm5.082 11.09 8.828 8.828'
+    ],
+    lasso: [
+      'M3.704 14.467a10 8 0 1 1 3.115 2.375',
+      'M7 22a5 5 0 0 1-2-3.994',
+      'M5 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4'
+    ],
+    text: [
+      'M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2',
+      'M12 4v16',
+      'M9 20h6'
+    ],
+    shape: [
+      'M8.3 10a.7.7 0 0 1-.626-1.079L11.4 3a.7.7 0 0 1 1.198-.043L16.3 8.9a.7.7 0 0 1-.572 1.1Z',
+      'M3 15a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z',
+      'M21 17.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z'
+    ],
+    hand: [
+      'M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2',
+      'M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2',
+      'M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8',
+      'M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15'
+    ],
+    sticky: [
+      'M13 20l7-7',
+      'M13 20v-6a1 1 0 0 1 1-1h6v-7a2 2 0 0 0-2-2h-12a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7'
+    ],
+    tape: [
+      'M2 12a5 5 0 0 1 5-5h10a5 5 0 0 1 0 10H7a5 5 0 0 1-5-5z',
+      'M7 7v10',
+      'M17 7v10'
+    ],
+    accessories: [
+      'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z',
+      'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z'
+    ],
+    laser: [
+      'M12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
+      'M12 4v3 M12 17v3 M4 12h3 M17 12h3',
+      'M6.3 6.3l2.2 2.2 M15.5 15.5l2.2 2.2 M17.7 6.3l-2.2 2.2 M8.5 15.5l-2.2 2.2'
+    ],
+    customize: [
+      'M4 21v-7 M4 10V3',
+      'M12 21v-9 M12 8V3',
+      'M20 21v-5 M20 12V3',
+      'M1 14h6 M9 8h6 M17 16h6'
+    ],
+    undo: [
+      'M9 14 4 9 9 4',
+      'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11'
+    ]
+  };
+
+  function toolIconSvg(id: string): string {
+    const filledSvg = TOOL_ICON_FILLED_SVGS[id];
+    if (filledSvg) return filledSvg;
+    const paths = TOOL_ICON_PATHS[id];
+    if (!paths) return '';
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-icon-svg">${paths.map(d => `<path d="${d}"/>`).join('')}</svg>`;
+  }
+
   const middleMenuItems = [
     { id: 'lasso' as const, label: 'Lasso', glyph: '⬚', accent: '#8db5d8' },
     { id: 'pen' as const, label: 'Pen', glyph: '✍', accent: DEFAULT_PEN_COLOR },
@@ -3525,6 +3600,8 @@
               >
                 {#if item.kind === 'action' && item.id === 'colors'}
                   <span class="pencil-squeeze-color-icon" aria-hidden="true" style={`background:${currentToolAccent()};`}></span>
+                {:else if TOOL_ICON_FILLED_SVGS[item.id] || TOOL_ICON_PATHS[item.id]}
+                  {@html toolIconSvg(item.id)}
                 {:else}
                   <span class="pencil-squeeze-glyph" aria-hidden="true">{item.glyph}</span>
                 {/if}
@@ -3803,7 +3880,11 @@
                   handleMiddleMenuItem(item.id, event.currentTarget as HTMLElement | null);
                 }}
               >
-                <span class="middle-menu-glyph">{item.glyph}</span>
+                {#if TOOL_ICON_FILLED_SVGS[item.id] || TOOL_ICON_PATHS[item.id]}
+                  {@html toolIconSvg(item.id)}
+                {:else}
+                  <span class="middle-menu-glyph">{item.glyph}</span>
+                {/if}
               </button>
             {/each}
 

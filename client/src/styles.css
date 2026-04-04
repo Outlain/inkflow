@@ -1125,6 +1125,45 @@ img {
   line-height: 1;
 }
 
+/* SVG line-art tool icons used in toolbar and squeeze menu */
+.tool-icon-svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  color: currentColor;
+}
+
+.middle-menu-button > svg,
+.pencil-squeeze-arc-tool > svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.middle-menu-button .tool-icon-svg {
+  width: 16px;
+  height: 16px;
+  color: var(--tool-accent);
+}
+
+.middle-menu-button > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.middle-menu-button.active .tool-icon-svg {
+  color: #fffdfa;
+}
+
+.pencil-squeeze-arc-tool .tool-icon-svg {
+  width: 20px;
+  height: 20px;
+}
+
+.pencil-squeeze-arc-tool > svg {
+  width: 20px;
+  height: 20px;
+}
+
 .middle-menu-divider {
   width: 1px;
   height: 26px;
